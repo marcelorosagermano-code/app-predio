@@ -458,7 +458,9 @@ export const authService = {
 
     if (token) {
       try {
-        const resp = await this.fetchWithAuth('/api/auth/profile');
+        const resp = await this.fetchWithAuth('/api/auth/profile', {
+          headers: explicitToken ? { Authorization: `Bearer ${explicitToken}` } : {},
+        });
         if (resp.ok) {
           const resJson = await resp.json();
           if (resJson.success && resJson.profile) {
@@ -540,7 +542,7 @@ export const authService = {
     try {
       const { data: residentData } = await supabase
         .from('unit_residents')
-        .select('unit_id, units(unit_number, block)')
+        .select('unit_id, units(unit_number, block, condominium_id)')
         .eq('profile_id', userId)
         .limit(1)
         .maybeSingle();
@@ -550,6 +552,13 @@ export const authService = {
         const u = residentData.units as any;
         if (u) {
           unitNumber = u.block ? `${u.unit_number} - Bloco ${u.block}` : u.unit_number;
+          if (u.condominium_id && !profileData.condominium_id) {
+            profileData.condominium_id = u.condominium_id;
+            void supabase
+              .from('profiles')
+              .update({ condominium_id: u.condominium_id })
+              .eq('id', userId);
+          }
         }
       }
     } catch {

@@ -94,29 +94,47 @@ export function registerApiRoutes(app: express.Express) {
         // Ignorar se não houver unidade
       }
 
-      // Auto-cura do condomínio: se profile.condominium_id for nulo, buscar condomínio existente no sistema
+      // Auto-cura e resolução do condomínio: se profile.condominium_id for nulo, buscar vínculo real da unidade em unit_residents
       let condominium = null;
       if (!profile.condominium_id) {
         try {
-          const { data: defaultCondo } = await supabaseAdmin
-            .from('condominiums')
-            .select('*')
-            .order('created_at', { ascending: true })
+          const { data: residentRow } = await supabaseAdmin
+            .from('unit_residents')
+            .select('unit_id, units(condominium_id)')
+            .eq('profile_id', user.id)
             .limit(1)
             .maybeSingle();
 
-          if (defaultCondo) {
-            profile.condominium_id = defaultCondo.id;
-            condominium = defaultCondo;
+          const realCondoId = (residentRow?.units as any)?.condominium_id;
+          if (realCondoId) {
+            profile.condominium_id = realCondoId;
             await supabaseAdmin
               .from('profiles')
-              .update({ condominium_id: defaultCondo.id })
+              .update({ condominium_id: realCondoId })
               .eq('id', profile.id);
+          } else {
+            // Fallback caso não tenha unidade vinculada (ex: admin que acabou de criar o sistema)
+            const { data: defaultCondo } = await supabaseAdmin
+              .from('condominiums')
+              .select('*')
+              .order('created_at', { ascending: true })
+              .limit(1)
+              .maybeSingle();
+
+            if (defaultCondo) {
+              profile.condominium_id = defaultCondo.id;
+              await supabaseAdmin
+                .from('profiles')
+                .update({ condominium_id: defaultCondo.id })
+                .eq('id', profile.id);
+            }
           }
         } catch (healErr) {
-          console.warn('Aviso ao auto-vincular perfil ao condomínio padrão:', healErr);
+          console.warn('Aviso ao resolver condomínio do perfil:', healErr);
         }
-      } else {
+      }
+
+      if (profile.condominium_id) {
         const { data: condoData } = await supabaseAdmin
           .from('condominiums')
           .select('*')
@@ -790,6 +808,25 @@ export function registerApiRoutes(app: express.Express) {
         updatedAt: condominium.updated_at,
       } : null;
 
+      // Garantir que a tabela public.profiles tenha o condominium_id real sincronizado
+      try {
+        if (!residentProfile || !residentProfile.condominium_id || residentProfile.condominium_id !== unit.condominium_id) {
+          await supabaseAdmin
+            .from('profiles')
+            .upsert({
+              id: user.id,
+              condominium_id: unit.condominium_id,
+              full_name: residentProfile?.full_name || user.user_metadata?.full_name || residentFullName,
+              email: residentProfile?.email || user.email || residentEmail,
+              role: 'morador',
+              is_active: true,
+              updated_at: new Date().toISOString(),
+            });
+        }
+      } catch (profSyncErr) {
+        console.warn('Aviso ao sincronizar profiles em morador-login:', profSyncErr);
+      }
+
       const formattedProfile = {
         id: residentProfile?.id || user.id,
         email: residentProfile?.email || user.email || residentEmail,
@@ -940,6 +977,40 @@ export function registerApiRoutes(app: express.Express) {
 
       if (!updateSucceeded) {
         return res.status(500).json({ success: false, error: `Erro ao atualizar senha: ${updateErrorMsg}` });
+      }
+
+      // Sincronizar public.profiles para garantir que o vínculo com condomínio permaneça consistente
+      try {
+        const { data: currentProf } = await supabaseAdmin
+          .from('profiles')
+          .select('id, condominium_id')
+          .eq('id', user.id)
+          .maybeSingle();
+
+        let resolvedCondoId = currentProf?.condominium_id || null;
+        if (!resolvedCondoId) {
+          const { data: residentRow } = await supabaseAdmin
+            .from('unit_residents')
+            .select('unit_id, units(condominium_id)')
+            .eq('profile_id', user.id)
+            .limit(1)
+            .maybeSingle();
+          resolvedCondoId = (residentRow?.units as any)?.condominium_id || user.user_metadata?.condominium_id || null;
+        }
+
+        if (resolvedCondoId && (!currentProf?.condominium_id || currentProf.condominium_id !== resolvedCondoId)) {
+          await supabaseAdmin
+            .from('profiles')
+            .update({
+              condominium_id: resolvedCondoId,
+              role: 'morador',
+              is_active: true,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', user.id);
+        }
+      } catch (syncProfErr) {
+        console.warn('Aviso ao sincronizar perfil em complete-first-access:', syncProfErr);
       }
 
       const condoId = user.user_metadata?.condominium_id || null;

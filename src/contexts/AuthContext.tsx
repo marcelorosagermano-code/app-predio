@@ -152,22 +152,40 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         return;
       }
 
-      // Validar vinculação com condomínio e tentar auto-cura
+      // Validar vinculação com condomínio e tentar auto-cura via vínculo real em unit_residents
       if (!profile.condominiumId && isSupabaseConfigured && supabase) {
         try {
-          const { data: condoList } = await supabase
-            .from('condominiums')
-            .select('id')
-            .order('created_at', { ascending: true })
-            .limit(1);
+          // 1. Tentar obter condomínio real da unidade associada em unit_residents
+          const { data: residentRow } = await supabase
+            .from('unit_residents')
+            .select('unit_id, units(condominium_id)')
+            .eq('profile_id', profile.id)
+            .limit(1)
+            .maybeSingle();
 
-          if (condoList && condoList.length > 0 && condoList[0]?.id) {
-            const foundCondoId = condoList[0].id;
-            profile.condominiumId = foundCondoId;
+          const unitCondoId = (residentRow?.units as any)?.condominium_id;
+          if (unitCondoId) {
+            profile.condominiumId = unitCondoId;
             await supabase
               .from('profiles')
-              .update({ condominium_id: foundCondoId })
+              .update({ condominium_id: unitCondoId })
               .eq('id', profile.id);
+          } else {
+            // 2. Fallback caso não seja morador com unidade (ex: admin na inicialização)
+            const { data: condoList } = await supabase
+              .from('condominiums')
+              .select('id')
+              .order('created_at', { ascending: true })
+              .limit(1);
+
+            if (condoList && condoList.length > 0 && condoList[0]?.id) {
+              const foundCondoId = condoList[0].id;
+              profile.condominiumId = foundCondoId;
+              await supabase
+                .from('profiles')
+                .update({ condominium_id: foundCondoId })
+                .eq('id', profile.id);
+            }
           }
         } catch (healCondoErr) {
           console.warn('Tentativa de auto-cura de condomínio pendente:', healCondoErr);
@@ -179,6 +197,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setStatus('NO_CONDOMINIUM');
         return;
       }
+
+      // Sincronizar estado do usuário com o condomínio validado
+      setUser((prev) => (prev ? { ...prev, condominioId: profile.condominiumId || '' } : prev));
 
       // Carregar condomínio e permissões do Role
       const [condoData, rolePerms] = await Promise.all([

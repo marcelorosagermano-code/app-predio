@@ -432,11 +432,17 @@ begin
     new.id,
     coalesce(nullif(trim(new.raw_user_meta_data->>'full_name'), ''), split_part(new.email, '@', 1)),
     new.email,
-    'morador',
+    coalesce(nullif(trim(new.raw_user_meta_data->>'role'), '')::public.user_role, 'morador'),
     true,
-    null
+    coalesce(
+      nullif(trim(new.raw_user_meta_data->>'condominium_id'), '')::uuid,
+      null
+    )
   )
-  on conflict (id) do nothing;
+  on conflict (id) do update set
+    condominium_id = coalesce(public.profiles.condominium_id, excluded.condominium_id),
+    full_name = coalesce(nullif(trim(excluded.full_name), ''), public.profiles.full_name),
+    role = coalesce(excluded.role, public.profiles.role);
   return new;
 end;
 $$ language plpgsql security definer set search_path = public, pg_temp;
@@ -562,8 +568,18 @@ drop policy if exists "Admins gerenciam perfis do condominio" on public.profiles
 drop policy if exists "Admins atualizam perfis do proprio condominio" on public.profiles;
 create policy "Admins atualizam perfis do proprio condominio" on public.profiles
   for update to authenticated
-  using (public.is_admin() and condominium_id = public.get_auth_condominium_id())
+  using (
+    public.is_admin() and (
+      condominium_id = public.get_auth_condominium_id()
+      or condominium_id is null
+    )
+  )
   with check (condominium_id = public.get_auth_condominium_id());
+
+drop policy if exists "Admins inserem perfis do proprio condominio" on public.profiles;
+create policy "Admins inserem perfis do proprio condominio" on public.profiles
+  for insert to authenticated
+  with check (public.is_admin() and condominium_id = public.get_auth_condominium_id());
 
 drop policy if exists "Admins excluem perfis do proprio condominio" on public.profiles;
 create policy "Admins excluem perfis do proprio condominio" on public.profiles
