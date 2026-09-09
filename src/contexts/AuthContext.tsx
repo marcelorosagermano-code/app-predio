@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback, useRef } from 'react';
 import { supabase, isSupabaseConfigured } from '../services/supabase/client';
 import { authService } from '../services/supabase/authService';
 import { onboardingService } from '../services/supabase/onboardingService';
@@ -57,6 +57,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [permissions, setPermissions] = useState<PermissionId[]>([]);
   const [legacyUser, setLegacyUser] = useState<UserProfile | null>(null);
   const [legacyCondominio, setLegacyCondominio] = useState<Condominio>(mockCondominio);
+  const currentUserRef = useRef<AuthUserProfile | null>(null);
+
+  useEffect(() => {
+    currentUserRef.current = user;
+  }, [user]);
 
   /**
    * Constrói o estado completo a partir do ID do usuário autenticado no Supabase
@@ -137,7 +142,29 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         return;
       }
 
-      // Validar vinculação com condomínio
+      // Validar vinculação com condomínio e tentar auto-cura
+      if (!profile.condominiumId && isSupabaseConfigured && supabase) {
+        try {
+          const { data: condoList } = await supabase
+            .from('condominiums')
+            .select('id')
+            .order('created_at', { ascending: true })
+            .limit(1);
+
+          if (condoList && condoList.length > 0 && condoList[0]?.id) {
+            const foundCondoId = condoList[0].id;
+            profile.condominiumId = foundCondoId;
+            await supabase
+              .from('profiles')
+              .update({ condominium_id: foundCondoId })
+              .eq('id', profile.id);
+          }
+        } catch (healCondoErr) {
+          console.warn('Tentativa de auto-cura de condomínio pendente:', healCondoErr);
+        }
+      }
+
+      // Se ainda não houver nenhum condomínio no sistema, exibir tela de onboarding/sem condomínio
       if (!profile.condominiumId) {
         setStatus('NO_CONDOMINIUM');
         return;
@@ -246,6 +273,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
         if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
           if (session?.user) {
+            // Se o usuário logado atualmente for administrador e receber evento de outro ID (ex: usuário morador criado), não deslogar o admin
+            if (
+              currentUserRef.current &&
+              currentUserRef.current.id !== session.user.id &&
+              currentUserRef.current.role === 'admin'
+            ) {
+              console.warn('Proteção de sessão: ignorando evento para usuário secundário:', session.user.id);
+              return;
+            }
             await loadUserData(session.user.id, session.user.email, session.access_token);
           }
         } else if (event === 'SIGNED_OUT') {

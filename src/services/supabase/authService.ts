@@ -803,6 +803,8 @@ export const authService = {
               persistSession: false,
               autoRefreshToken: false,
               detectSessionInUrl: false,
+              storageKey: `isolated_morador_creation_${Date.now()}_${Math.random()}`,
+              flowType: 'pkce',
               storage: {
                 getItem: () => null,
                 setItem: () => {},
@@ -960,7 +962,7 @@ export const authService = {
       const { data: profiles, error: pErr } = await supabase
         .from('profiles')
         .select('*')
-        .eq('condominium_id', condoId)
+        .or(`condominium_id.eq.${condoId},condominium_id.is.null`)
         .neq('is_active', false)
         .order('created_at', { ascending: false });
 
@@ -970,8 +972,17 @@ export const authService = {
           .select('profile_id, name, email, unit_id, units(id, unit_number, block)');
 
         return profiles.map((p: any) => {
-          const resInfo = residents?.find((r: any) => r.profile_id === p.id);
-          const unitNumber = (resInfo?.units as any)?.unit_number || null;
+          let resInfo = residents?.find((r: any) => r.profile_id === p.id);
+          if (!resInfo && p.email) {
+            resInfo = residents?.find((r: any) => r.email && r.email.toLowerCase() === p.email.toLowerCase());
+          }
+          let unitNumber = (resInfo?.units as any)?.unit_number || null;
+          if (!unitNumber && p.email?.includes('morador.ap')) {
+            const match = p.email.match(/morador\.ap([a-z0-9]+)\./i);
+            if (match && match[1]) {
+              unitNumber = match[1].toUpperCase();
+            }
+          }
           return {
             id: p.id,
             nome: p.full_name || p.email,

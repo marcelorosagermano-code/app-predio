@@ -94,15 +94,74 @@ export function registerApiRoutes(app: express.Express) {
         // Ignorar se não houver unidade
       }
 
-      // Buscar condomínio se vinculado
+      // Auto-cura do condomínio: se profile.condominium_id for nulo, buscar condomínio existente no sistema
       let condominium = null;
-      if (profile.condominium_id) {
+      if (!profile.condominium_id) {
+        try {
+          const { data: defaultCondo } = await supabaseAdmin
+            .from('condominiums')
+            .select('*')
+            .order('created_at', { ascending: true })
+            .limit(1)
+            .maybeSingle();
+
+          if (defaultCondo) {
+            profile.condominium_id = defaultCondo.id;
+            condominium = defaultCondo;
+            await supabaseAdmin
+              .from('profiles')
+              .update({ condominium_id: defaultCondo.id })
+              .eq('id', profile.id);
+          }
+        } catch (healErr) {
+          console.warn('Aviso ao auto-vincular perfil ao condomínio padrão:', healErr);
+        }
+      } else {
         const { data: condoData } = await supabaseAdmin
           .from('condominiums')
           .select('*')
           .eq('id', profile.condominium_id)
           .maybeSingle();
         condominium = condoData || null;
+      }
+
+      // Auto-cura da unidade: se o morador ainda não tiver unidade mapeada, buscar dos metadados ou email
+      if (!unitId && condominium?.id) {
+        try {
+          let foundUnitNumber = user.user_metadata?.unit_number || null;
+          if (!foundUnitNumber && profile.email?.includes('morador.ap')) {
+            const match = profile.email.match(/morador\.ap([a-z0-9]+)\./i);
+            if (match && match[1]) {
+              foundUnitNumber = match[1].toUpperCase();
+            }
+          }
+
+          if (foundUnitNumber) {
+            const { data: matchedUnit } = await supabaseAdmin
+              .from('units')
+              .select('id, unit_number, block')
+              .eq('condominium_id', condominium.id)
+              .ilike('unit_number', foundUnitNumber)
+              .maybeSingle();
+
+            if (matchedUnit) {
+              unitId = matchedUnit.id;
+              unitNumber = matchedUnit.block ? `${matchedUnit.unit_number} - Bloco ${matchedUnit.block}` : matchedUnit.unit_number;
+              await supabaseAdmin
+                .from('unit_residents')
+                .insert({
+                  unit_id: matchedUnit.id,
+                  profile_id: user.id,
+                  name: profile.full_name,
+                  email: profile.email,
+                  relationship_type: 'tenant',
+                  is_primary: true,
+                });
+            }
+          }
+        } catch (unitHealErr) {
+          console.warn('Aviso ao auto-vincular morador à unidade:', unitHealErr);
+        }
       }
 
       const rolePermissionsMap: Record<string, string[]> = {
@@ -1230,11 +1289,11 @@ export function registerApiRoutes(app: express.Express) {
         return res.json({ success: true, users: [] });
       }
 
-      // 2. Buscar profiles do condomínio (apenas contas ativas)
-      const { data: profiles, error: pErr } = await supabaseAdmin
+      // 2. Buscar profiles do condomínio (incluindo órfãos com condominium_id nulo para auto-cura)
+      const { data: rawProfiles, error: pErr } = await supabaseAdmin
         .from('profiles')
         .select('*')
-        .eq('condominium_id', condominiumId)
+        .or(`condominium_id.eq.${condominiumId},condominium_id.is.null`)
         .neq('is_active', false)
         .order('created_at', { ascending: false });
 
@@ -1242,16 +1301,31 @@ export function registerApiRoutes(app: express.Express) {
         return res.status(500).json({ success: false, error: `Erro ao buscar usuários: ${pErr.message}` });
       }
 
+      // Auto-curar perfis com condominium_id nulo vinculando ao condomínio ativo
+      const profiles = (rawProfiles || []).map((p) => {
+        if (!p.condominium_id) {
+          p.condominium_id = condominiumId;
+          supabaseAdmin.from('profiles').update({ condominium_id: condominiumId }).eq('id', p.id).then();
+        }
+        return p;
+      });
+
       // 3. Buscar vínculos com unidades
       const { data: residents } = await supabaseAdmin
         .from('unit_residents')
-        .select('profile_id, name, email, unit_id, units(id, unit_number, block)')
-        .not('profile_id', 'is', null);
+        .select('id, profile_id, name, email, unit_id, units(id, unit_number, block)');
 
       // 4. Mapear status e metadados de primeiro acesso
       const mappedUsers = await Promise.all(
         (profiles || []).map(async (p) => {
-          const resInfo = residents?.find((r) => r.profile_id === p.id);
+          let resInfo = residents?.find((r) => r.profile_id === p.id);
+          if (!resInfo && p.email) {
+            resInfo = residents?.find((r) => r.email && r.email.toLowerCase() === p.email.toLowerCase());
+            if (resInfo && !resInfo.profile_id) {
+              supabaseAdmin.from('unit_residents').update({ profile_id: p.id }).eq('id', resInfo.id).then();
+            }
+          }
+
           let unitNumber = (resInfo?.units as any)?.unit_number || null;
           let isFirstAccessPending = false;
 
@@ -1267,6 +1341,14 @@ export function registerApiRoutes(app: express.Express) {
                 }
               }
             } catch {}
+
+            // Se ainda não tiver unidade mapeada, tentar extrair do padrão do email morador.ap101...
+            if (!unitNumber && p.email?.includes('morador.ap')) {
+              const match = p.email.match(/morador\.ap([a-z0-9]+)\./i);
+              if (match && match[1]) {
+                unitNumber = match[1].toUpperCase();
+              }
+            }
           }
 
           return {
@@ -1554,13 +1636,13 @@ export function registerApiRoutes(app: express.Express) {
         return res.status(400).json({ success: false, error: 'ID do usuário não fornecido.' });
       }
 
-      // 3. Buscar perfil alvo e verificar se pertence ao condomínio do admin
+      // 3. Buscar perfil alvo e verificar se pertence ao condomínio do admin ou está órfão
       const { data: targetProfile, error: targetProfileErr } = await supabaseAdmin
         .from('profiles')
         .select('*')
         .eq('id', profileId)
-        .eq('condominium_id', condominiumId)
-        .single();
+        .or(`condominium_id.eq.${condominiumId},condominium_id.is.null`)
+        .maybeSingle();
 
       if (targetProfileErr || !targetProfile) {
         return res.status(404).json({ success: false, error: 'Usuário não encontrado neste condomínio.' });

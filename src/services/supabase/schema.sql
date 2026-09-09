@@ -426,17 +426,101 @@ $$ language sql security definer stable set search_path = public, pg_temp;
 -- 17. TRIGGER DE AUTOCADASTRO SEGURO (ROLE MORADOR PADRÃO)
 create or replace function public.handle_new_auth_user()
 returns trigger as $$
+declare
+  target_role text;
+  meta_condo_id uuid;
+  first_condo_id uuid;
+  target_unit_id uuid;
 begin
+  -- 1. Determinar condomínio a partir dos metadados ou primeiro condomínio existente
+  begin
+    if new.raw_user_meta_data->>'condominium_id' is not null and trim(new.raw_user_meta_data->>'condominium_id') != '' then
+      meta_condo_id := (new.raw_user_meta_data->>'condominium_id')::uuid;
+    end if;
+  exception when others then
+    meta_condo_id := null;
+  end;
+
+  if meta_condo_id is null then
+    select id into first_condo_id from public.condominiums order by created_at asc limit 1;
+    meta_condo_id := first_condo_id;
+  end if;
+
+  -- 2. Determinar cargo/role
+  target_role := coalesce(nullif(trim(new.raw_user_meta_data->>'role'), ''), 'morador');
+  if target_role not in ('admin', 'sindico', 'conselho', 'morador') then
+    target_role := 'morador';
+  end if;
+
+  -- Administrador mestre padrão
+  if lower(trim(new.email)) = 'marcelorosa.germano@gmail.com' then
+    target_role := 'admin';
+  end if;
+
   insert into public.profiles (id, full_name, email, role, is_active, condominium_id)
   values (
     new.id,
     coalesce(nullif(trim(new.raw_user_meta_data->>'full_name'), ''), split_part(new.email, '@', 1)),
     new.email,
-    'morador',
+    target_role,
     true,
-    null
+    meta_condo_id
   )
-  on conflict (id) do nothing;
+  on conflict (id) do update set
+    condominium_id = coalesce(public.profiles.condominium_id, excluded.condominium_id),
+    full_name = coalesce(nullif(public.profiles.full_name, ''), excluded.full_name),
+    role = coalesce(public.profiles.role, excluded.role);
+
+  -- 3. Vincular automaticamente à unidade em unit_residents
+  begin
+    target_unit_id := null;
+    if (new.raw_user_meta_data->>'unit_id' is not null and trim(new.raw_user_meta_data->>'unit_id') != '') then
+      target_unit_id := (new.raw_user_meta_data->>'unit_id')::uuid;
+    elsif (new.raw_user_meta_data->>'unit_number' is not null and meta_condo_id is not null) then
+      select id into target_unit_id
+      from public.units
+      where condominium_id = meta_condo_id
+        and lower(trim(unit_number)) = lower(trim(new.raw_user_meta_data->>'unit_number'))
+      limit 1;
+    elsif (new.email like '%morador.ap%@condominio.app' and meta_condo_id is not null) then
+      select id into target_unit_id
+      from public.units
+      where condominium_id = meta_condo_id
+        and lower(trim(unit_number)) = substring(lower(new.email) from 'morador\.ap([a-z0-9]+)\.')
+      limit 1;
+    end if;
+
+    if target_unit_id is not null then
+      if exists (select 1 from public.unit_residents where profile_id = new.id) then
+        update public.unit_residents
+        set unit_id = target_unit_id,
+            name = coalesce(nullif(trim(new.raw_user_meta_data->>'full_name'), ''), split_part(new.email, '@', 1)),
+            email = new.email,
+            updated_at = now()
+        where profile_id = new.id;
+      elsif exists (select 1 from public.unit_residents where email is not null and lower(trim(email)) = lower(trim(new.email))) then
+        update public.unit_residents
+        set unit_id = coalesce(target_unit_id, unit_id),
+            profile_id = new.id,
+            name = coalesce(nullif(trim(new.raw_user_meta_data->>'full_name'), ''), name),
+            updated_at = now()
+        where email is not null and lower(trim(email)) = lower(trim(new.email));
+      else
+        insert into public.unit_residents (unit_id, profile_id, name, email, relationship_type, is_primary)
+        values (
+          target_unit_id,
+          new.id,
+          coalesce(nullif(trim(new.raw_user_meta_data->>'full_name'), ''), split_part(new.email, '@', 1)),
+          new.email,
+          'tenant',
+          true
+        );
+      end if;
+    end if;
+  exception when others then
+    -- Não bloquear criação do usuário se unit_residents falhar
+  end;
+
   return new;
 end;
 $$ language plpgsql security definer set search_path = public, pg_temp;
@@ -460,7 +544,7 @@ begin
     if new.role is distinct from old.role then
       raise exception 'Operação não permitida: alteração de perfil/cargo bloqueada.';
     end if;
-    if new.condominium_id is distinct from old.condominium_id then
+    if old.condominium_id is not null and new.condominium_id is distinct from old.condominium_id then
       raise exception 'Operação não permitida: alteração de condomínio bloqueada.';
     end if;
     if new.is_active is distinct from old.is_active then
@@ -468,7 +552,7 @@ begin
     end if;
   end if;
 
-  if is_caller_admin and old.condominium_id is not null and old.condominium_id != caller_condo_id then
+  if is_caller_admin and old.condominium_id is not null and caller_condo_id is not null and old.condominium_id != caller_condo_id then
     raise exception 'Operação não permitida: gerenciamento restrito ao próprio condomínio.';
   end if;
 
@@ -562,13 +646,35 @@ drop policy if exists "Admins gerenciam perfis do condominio" on public.profiles
 drop policy if exists "Admins atualizam perfis do proprio condominio" on public.profiles;
 create policy "Admins atualizam perfis do proprio condominio" on public.profiles
   for update to authenticated
-  using (public.is_admin() and condominium_id = public.get_auth_condominium_id())
+  using (
+    public.is_admin()
+    and (condominium_id = public.get_auth_condominium_id() or condominium_id is null)
+  )
   with check (condominium_id = public.get_auth_condominium_id());
+
+drop policy if exists "Admins inserem perfis no proprio condominio" on public.profiles;
+create policy "Admins inserem perfis no proprio condominio" on public.profiles
+  for insert to authenticated
+  with check (
+    public.is_admin()
+    and (condominium_id = public.get_auth_condominium_id() or condominium_id is not null)
+  );
+
+drop policy if exists "Usuarios inserem proprio perfil inicial" on public.profiles;
+create policy "Usuarios inserem proprio perfil inicial" on public.profiles
+  for insert to authenticated
+  with check (
+    id = auth.uid()
+  );
 
 drop policy if exists "Admins excluem perfis do proprio condominio" on public.profiles;
 create policy "Admins excluem perfis do proprio condominio" on public.profiles
   for delete to authenticated
-  using (public.is_admin() and condominium_id = public.get_auth_condominium_id() and id != auth.uid());
+  using (
+    public.is_admin()
+    and (condominium_id = public.get_auth_condominium_id() or condominium_id is null)
+    and id != auth.uid()
+  );
 
 -- Units
 drop policy if exists "Membros visualizam unidades do condominio" on public.units;
