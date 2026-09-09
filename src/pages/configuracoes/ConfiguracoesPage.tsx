@@ -52,7 +52,42 @@ interface CondominiumUserItem {
 
 export const ConfiguracoesPage: React.FC = () => {
   const { condominio, user } = useAuth();
-  const [activeTab, setActiveTab] = useState<'CONDOMINIO' | 'USUARIOS' | 'PERMISSOES' | 'SUPABASE'>('USUARIOS');
+  
+  const getInitialSubTab = (): 'CONDOMINIO' | 'USUARIOS' | 'PERMISSOES' | 'SUPABASE' => {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const sub = urlParams.get('subtab') as any;
+      if (sub && ['CONDOMINIO', 'USUARIOS', 'PERMISSOES', 'SUPABASE'].includes(sub)) {
+        return sub;
+      }
+      const saved = localStorage.getItem('remix_configuracoes_subtab') as any;
+      if (saved && ['CONDOMINIO', 'USUARIOS', 'PERMISSOES', 'SUPABASE'].includes(saved)) {
+        return saved;
+      }
+    } catch {}
+    return 'USUARIOS';
+  };
+
+  const [activeTab, setActiveTab] = useState<'CONDOMINIO' | 'USUARIOS' | 'PERMISSOES' | 'SUPABASE'>(getInitialSubTab);
+
+  const handleSelectSubTab = (tab: 'CONDOMINIO' | 'USUARIOS' | 'PERMISSOES' | 'SUPABASE') => {
+    setActiveTab(tab);
+    try {
+      localStorage.setItem('remix_configuracoes_subtab', tab);
+      const url = new URL(window.location.href);
+      url.searchParams.set('subtab', tab);
+      window.history.replaceState({}, '', url.toString());
+    } catch {}
+  };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('remix_configuracoes_subtab', activeTab);
+      const url = new URL(window.location.href);
+      url.searchParams.set('subtab', activeTab);
+      window.history.replaceState({}, '', url.toString());
+    } catch {}
+  }, [activeTab]);
   
   // Estados para Gestão de Usuários e Acessos
   const [usersList, setUsersList] = useState<CondominiumUserItem[]>([]);
@@ -298,7 +333,7 @@ export const ConfiguracoesPage: React.FC = () => {
       {/* Settings Sub-Navigation */}
       <div className="flex border-b border-slate-200 gap-4 overflow-x-auto text-xs">
         <button
-          onClick={() => setActiveTab('CONDOMINIO')}
+          onClick={() => handleSelectSubTab('CONDOMINIO')}
           className={`pb-3 font-semibold transition-colors whitespace-nowrap flex items-center gap-1.5 ${
             activeTab === 'CONDOMINIO'
               ? 'border-b-2 border-indigo-600 text-indigo-600'
@@ -310,7 +345,7 @@ export const ConfiguracoesPage: React.FC = () => {
         </button>
 
         <button
-          onClick={() => setActiveTab('USUARIOS')}
+          onClick={() => handleSelectSubTab('USUARIOS')}
           className={`pb-3 font-semibold transition-colors whitespace-nowrap flex items-center gap-1.5 ${
             activeTab === 'USUARIOS'
               ? 'border-b-2 border-indigo-600 text-indigo-600'
@@ -322,7 +357,7 @@ export const ConfiguracoesPage: React.FC = () => {
         </button>
 
         <button
-          onClick={() => setActiveTab('PERMISSOES')}
+          onClick={() => handleSelectSubTab('PERMISSOES')}
           className={`pb-3 font-semibold transition-colors whitespace-nowrap flex items-center gap-1.5 ${
             activeTab === 'PERMISSOES'
               ? 'border-b-2 border-indigo-600 text-indigo-600'
@@ -334,7 +369,7 @@ export const ConfiguracoesPage: React.FC = () => {
         </button>
 
         <button
-          onClick={() => setActiveTab('SUPABASE')}
+          onClick={() => handleSelectSubTab('SUPABASE')}
           className={`pb-3 font-semibold transition-colors whitespace-nowrap flex items-center gap-1.5 ${
             activeTab === 'SUPABASE'
               ? 'border-b-2 border-indigo-600 text-indigo-600'

@@ -1,3 +1,4 @@
+import { createClient } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from './client';
 import { UserRole } from '../../types/database';
 import { AuthUserProfile, AuthCondominium, PermissionId } from '../../types/auth';
@@ -639,26 +640,48 @@ export const authService = {
         throw new Error('Não foi possível identificar ou criar a unidade.');
       }
 
-      // 2.2 Tentar criar o usuário no Supabase Auth via signUp
+      // 2.2 Tentar criar o usuário no Supabase Auth via cliente ISOLADO
+      // CRÍTICO: Nunca usar o cliente global `supabase` aqui, pois o signUp sobrescreveria a sessão do admin no navegador!
       let profileId: string | null = null;
       try {
-        const { data: signUpData } = await supabase.auth.signUp({
-          email: residentEmail,
-          password: '000000',
-          options: {
-            data: {
-              full_name: cleanName,
-              role: 'morador',
-              unit_id: unitId,
-              unit_number: cleanUnit,
-              condominium_id: condoId,
-              must_change_password: true,
-              first_access_completed: false,
+        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+        const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+        if (supabaseUrl && supabaseAnonKey) {
+          const isolatedSupabase = createClient(supabaseUrl, supabaseAnonKey, {
+            auth: {
+              persistSession: false,
+              autoRefreshToken: false,
+              detectSessionInUrl: false,
+              storage: {
+                getItem: () => null,
+                setItem: () => {},
+                removeItem: () => {},
+              },
             },
-          },
-        });
-        if (signUpData?.user?.id) {
-          profileId = signUpData.user.id;
+          });
+
+          const { data: signUpData, error: signUpErr } = await isolatedSupabase.auth.signUp({
+            email: residentEmail,
+            password: '000000',
+            options: {
+              data: {
+                full_name: cleanName,
+                role: 'morador',
+                unit_id: unitId,
+                unit_number: cleanUnit,
+                condominium_id: condoId,
+                must_change_password: true,
+                first_access_completed: false,
+              },
+            },
+          });
+
+          if (signUpData?.user?.id) {
+            profileId = signUpData.user.id;
+          }
+          if (signUpErr) {
+            console.warn('Aviso no signUp isolado do morador:', signUpErr.message);
+          }
         }
       } catch (authErr) {
         console.warn('SignUp morador fallback aviso:', authErr);

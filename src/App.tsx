@@ -22,9 +22,60 @@ import { Button } from './components/ui/Button';
 
 const AppContent: React.FC = () => {
   const { status, user, isAdmin, isCouncil, hasPermission } = useAuth();
-  const [currentTab, setCurrentTab] = useState<string>('dashboard');
+  
+  const getInitialTab = (): string => {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const tabFromUrl = urlParams.get('tab');
+      if (tabFromUrl) return tabFromUrl;
+
+      const hash = window.location.hash;
+      if (hash.startsWith('#tab=')) {
+        return hash.replace('#tab=', '');
+      }
+
+      const savedTab = localStorage.getItem('remix_current_tab');
+      if (savedTab) return savedTab;
+    } catch {}
+    return 'dashboard';
+  };
+
+  const [currentTab, setCurrentTab] = useState<string>(getInitialTab);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(false);
   const [isPasswordRecoveryMode, setIsPasswordRecoveryMode] = useState<boolean>(false);
+
+  const handleSelectTab = (tab: string) => {
+    setCurrentTab(tab);
+    try {
+      localStorage.setItem('remix_current_tab', tab);
+      const url = new URL(window.location.href);
+      url.searchParams.set('tab', tab);
+      window.history.replaceState({}, '', url.toString());
+    } catch {}
+  };
+
+  // Sincronizar tab no storage e na URL e suportar navegação do browser
+  useEffect(() => {
+    try {
+      localStorage.setItem('remix_current_tab', currentTab);
+      const url = new URL(window.location.href);
+      if (url.searchParams.get('tab') !== currentTab) {
+        url.searchParams.set('tab', currentTab);
+        window.history.replaceState({}, '', url.toString());
+      }
+    } catch {}
+
+    const onPopState = () => {
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const tab = urlParams.get('tab') || localStorage.getItem('remix_current_tab') || 'dashboard';
+        setCurrentTab(tab);
+      } catch {}
+    };
+
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [currentTab]);
 
   // Detectar link de recuperação de senha do Supabase na URL
   useEffect(() => {
@@ -39,11 +90,11 @@ const AppContent: React.FC = () => {
     if (user) {
       if (isAdmin || isCouncil) {
         if (currentTab.startsWith('morador-')) {
-          setCurrentTab('dashboard');
+          handleSelectTab('dashboard');
         }
       } else {
         if (!currentTab.startsWith('morador-')) {
-          setCurrentTab('morador-dashboard');
+          handleSelectTab('morador-dashboard');
         }
       }
     }
@@ -106,16 +157,16 @@ const AppContent: React.FC = () => {
     // Dashboard Geral / Administrativo
     if (currentTab === 'dashboard') {
       return (isAdmin || isCouncil) ? (
-        <AdminDashboard onNavigate={setCurrentTab} />
+        <AdminDashboard onNavigate={handleSelectTab} />
       ) : (
-        <MoradorDashboard onNavigate={setCurrentTab} />
+        <MoradorDashboard onNavigate={handleSelectTab} />
       );
     }
 
     // Gestão de Unidades
     if (currentTab === 'unidades') {
       if (!hasPermission('units:view')) {
-        return <UnauthorizedView onGoHome={() => setCurrentTab('morador-dashboard')} />;
+        return <UnauthorizedView onGoHome={() => handleSelectTab('morador-dashboard')} />;
       }
       return <UnidadesPage />;
     }
@@ -123,7 +174,7 @@ const AppContent: React.FC = () => {
     // Controle Financeiro
     if (currentTab === 'financeiro') {
       if (!hasPermission('financial:view_all')) {
-        return <UnauthorizedView onGoHome={() => setCurrentTab('morador-dashboard')} />;
+        return <UnauthorizedView onGoHome={() => handleSelectTab('morador-dashboard')} />;
       }
       return <FinanceiroPage />;
     }
@@ -131,7 +182,7 @@ const AppContent: React.FC = () => {
     // Ordens de Serviço & Manutenção
     if (currentTab === 'manutencao') {
       if (!hasPermission('maintenance:view_all')) {
-        return <UnauthorizedView onGoHome={() => setCurrentTab('morador-dashboard')} />;
+        return <UnauthorizedView onGoHome={() => handleSelectTab('morador-dashboard')} />;
       }
       return <ManutencaoPage />;
     }
@@ -139,7 +190,7 @@ const AppContent: React.FC = () => {
     // Comunicados do Condomínio
     if (currentTab === 'comunicados') {
       if (!hasPermission('announcements:view')) {
-        return <UnauthorizedView onGoHome={() => setCurrentTab('morador-dashboard')} />;
+        return <UnauthorizedView onGoHome={() => handleSelectTab('morador-dashboard')} />;
       }
       return <ComunicadosPage />;
     }
@@ -147,7 +198,7 @@ const AppContent: React.FC = () => {
     // Repositório de Documentos
     if (currentTab === 'documentos') {
       if (!hasPermission('documents:view_admin') && !hasPermission('documents:view_public')) {
-        return <UnauthorizedView onGoHome={() => setCurrentTab('morador-dashboard')} />;
+        return <UnauthorizedView onGoHome={() => handleSelectTab('morador-dashboard')} />;
       }
       return <DocumentosPage />;
     }
@@ -155,7 +206,7 @@ const AppContent: React.FC = () => {
     // Assembleias & Votações
     if (currentTab === 'assembleias') {
       if (!hasPermission('assemblies:view')) {
-        return <UnauthorizedView onGoHome={() => setCurrentTab('morador-dashboard')} />;
+        return <UnauthorizedView onGoHome={() => handleSelectTab('morador-dashboard')} />;
       }
       return <AssembleiasPage />;
     }
@@ -163,14 +214,14 @@ const AppContent: React.FC = () => {
     // Parametrização e Configurações
     if (currentTab === 'configuracoes') {
       if (!hasPermission('settings:view')) {
-        return <UnauthorizedView onGoHome={() => setCurrentTab('morador-dashboard')} />;
+        return <UnauthorizedView onGoHome={() => handleSelectTab('morador-dashboard')} />;
       }
       return <ConfiguracoesPage />;
     }
 
     // Rotas da Área do Morador
     if (currentTab === 'morador-dashboard') {
-      return <MoradorDashboard onNavigate={setCurrentTab} />;
+      return <MoradorDashboard onNavigate={handleSelectTab} />;
     }
 
     if (currentTab === 'morador-unidade') {
@@ -205,7 +256,7 @@ const AppContent: React.FC = () => {
   };
 
   return (
-    <MainLayout currentTab={currentTab} onSelectTab={setCurrentTab}>
+    <MainLayout currentTab={currentTab} onSelectTab={handleSelectTab}>
       {renderContent()}
     </MainLayout>
   );
