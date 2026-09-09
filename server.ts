@@ -2124,13 +2124,17 @@ async function startServer() {
 
   // Configuração do Vite middleware para desenvolvimento / SPA em produção
   if (process.env.NODE_ENV !== 'production') {
-    const vitePkg = 'vite';
-    const { createServer: createViteServer } = await import(/* @vite-ignore */ vitePkg);
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
+    try {
+      const dynamicImport = new Function('modulePath', 'return import(modulePath)');
+      const { createServer: createViteServer } = await dynamicImport('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } catch (e) {
+      console.error('[DEV_SERVER] Failed to load Vite:', e);
+    }
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
@@ -2144,7 +2148,14 @@ async function startServer() {
   });
 }
 
-// Iniciar quando executado no container (não no ambiente serverless da Vercel)
-if (!process.env.VERCEL) {
+// Detecção robusta para evitar iniciar o servidor Express na Vercel (que usa Serverless Functions via api/index.ts)
+const isVercelServerless = !!(
+  process.env.VERCEL === '1' || 
+  process.env.VERCEL_ENV || 
+  process.env.NOW_REGION ||
+  process.env.VERCEL_URL
+);
+
+if (!isVercelServerless) {
   startServer();
 }
