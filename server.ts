@@ -1,4 +1,6 @@
+// @ts-ignore
 import express from 'express';
+// @ts-ignore
 import path from 'path';
 import { createClient } from '@supabase/supabase-js';
 
