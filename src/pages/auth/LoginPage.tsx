@@ -146,7 +146,7 @@ export const LoginPage: React.FC = () => {
                 className="w-full tracking-wide uppercase font-bold text-xs"
                 rightIcon={<ArrowRight className="w-4 h-4" />}
               >
-                ENTRAR NO PORTAL DO MORADOR
+                ENTRAR NO SISTEMA
               </Button>
             </div>
           </form>

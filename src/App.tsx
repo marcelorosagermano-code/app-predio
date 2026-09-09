@@ -49,7 +49,15 @@ const AppContent: React.FC = () => {
     try {
       localStorage.setItem('remix_current_tab', tab);
       const url = new URL(window.location.href);
-      url.searchParams.set('tab', tab);
+      if (tab === 'dashboard') {
+        url.pathname = '/dashboard';
+        url.search = '';
+      } else if (tab === 'morador-dashboard') {
+        url.pathname = '/portal';
+        url.search = '';
+      } else {
+        url.searchParams.set('tab', tab);
+      }
       window.history.replaceState({}, '', url.toString());
     } catch {}
   };
@@ -59,7 +67,15 @@ const AppContent: React.FC = () => {
     try {
       localStorage.setItem('remix_current_tab', currentTab);
       const url = new URL(window.location.href);
-      if (url.searchParams.get('tab') !== currentTab) {
+      if (currentTab === 'dashboard' && url.pathname !== '/dashboard') {
+        url.pathname = '/dashboard';
+        url.search = '';
+        window.history.replaceState({}, '', url.toString());
+      } else if (currentTab === 'morador-dashboard' && url.pathname !== '/portal') {
+        url.pathname = '/portal';
+        url.search = '';
+        window.history.replaceState({}, '', url.toString());
+      } else if (currentTab !== 'dashboard' && currentTab !== 'morador-dashboard' && url.searchParams.get('tab') !== currentTab) {
         url.searchParams.set('tab', currentTab);
         window.history.replaceState({}, '', url.toString());
       }
@@ -88,17 +104,26 @@ const AppContent: React.FC = () => {
   // Ajustar tab inicial conforme o perfil do usuário logado
   useEffect(() => {
     if (user) {
-      if (isAdmin || isSindico || isCouncil) {
+      // Admin e Síndico: Forçar para o painel administrativo caso tentem acessar área de morador
+      if (user.role === 'admin' || user.role === 'sindico') {
         if (currentTab.startsWith('morador-')) {
           handleSelectTab('dashboard');
         }
-      } else {
+      } 
+      // Conselho: Também utiliza a visão administrativa mas com permissões restritas
+      else if (user.role === 'conselho') {
+        if (currentTab.startsWith('morador-')) {
+          handleSelectTab('dashboard');
+        }
+      }
+      // Morador: Forçar para o portal do morador caso tentem acessar área administrativa
+      else if (user.role === 'morador') {
         if (!currentTab.startsWith('morador-')) {
           handleSelectTab('morador-dashboard');
         }
       }
     }
-  }, [user?.role, user?.id, isAdmin, isSindico, isCouncil]);
+  }, [user?.role, user?.id, currentTab]);
 
   // 1. Estado de Recuperação de Senha
   if (isPasswordRecoveryMode) {
