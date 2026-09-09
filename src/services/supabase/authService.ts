@@ -782,6 +782,7 @@ export const authService = {
         .from('profiles')
         .select('*')
         .eq('condominium_id', condoId)
+        .neq('is_active', false)
         .order('created_at', { ascending: false });
 
       if (profiles && profiles.length > 0) {
@@ -996,17 +997,21 @@ export const authService = {
       // 2.1 Desvincular de unit_residents
       await supabase.from('unit_residents').delete().eq('profile_id', profileId);
 
-      // 2.2 Desativar em profiles
-      const { error: profErr } = await supabase
+      // 2.2 Excluir de profiles (ou marcar inativo se houver restrição de integridade referencial)
+      const { error: delProfErr } = await supabase
         .from('profiles')
-        .update({
-          is_active: false,
-          updated_at: new Date().toISOString(),
-        })
+        .delete()
         .eq('id', profileId);
 
-      if (profErr) {
-        console.warn('Aviso ao atualizar profiles no deleteMoradorUser:', profErr);
+      if (delProfErr) {
+        console.warn('Aviso ao deletar profiles, aplicando is_active: false:', delProfErr);
+        await supabase
+          .from('profiles')
+          .update({
+            is_active: false,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', profileId);
       }
 
       // 2.3 Registrar log de auditoria

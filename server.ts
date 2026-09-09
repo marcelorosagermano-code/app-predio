@@ -1016,11 +1016,12 @@ export function registerApiRoutes(app: express.Express) {
         return res.json({ success: true, users: [] });
       }
 
-      // 2. Buscar profiles do condomínio
+      // 2. Buscar profiles do condomínio (apenas contas ativas)
       const { data: profiles, error: pErr } = await supabaseAdmin
         .from('profiles')
         .select('*')
         .eq('condominium_id', condominiumId)
+        .neq('is_active', false)
         .order('created_at', { ascending: false });
 
       if (pErr) {
@@ -1368,20 +1369,28 @@ export function registerApiRoutes(app: express.Express) {
 
       const unitNum = (resRow?.units as any)?.unit_number || 'N/A';
 
-      // 5. Desativar perfil na tabela public.profiles
-      await supabaseAdmin
-        .from('profiles')
-        .update({
-          is_active: false,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', profileId);
-
-      // 6. Desvincular da unidade em public.unit_residents (a unidade em public.units continua existindo!)
+      // 5. Desvincular da unidade em public.unit_residents
       await supabaseAdmin
         .from('unit_residents')
         .delete()
         .eq('profile_id', profileId);
+
+      // 6. Excluir perfil na tabela public.profiles (ou marcar inativo se houver restrição de FK)
+      const { error: delProfErr } = await supabaseAdmin
+        .from('profiles')
+        .delete()
+        .eq('id', profileId);
+
+      if (delProfErr) {
+        console.warn('Aviso ao excluir profile, marcando is_active: false:', delProfErr);
+        await supabaseAdmin
+          .from('profiles')
+          .update({
+            is_active: false,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', profileId);
+      }
 
       // 7. Excluir o usuário no Supabase Auth para revogar o acesso imediatamente
       try {

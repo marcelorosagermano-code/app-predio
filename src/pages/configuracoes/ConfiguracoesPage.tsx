@@ -91,14 +91,17 @@ export const ConfiguracoesPage: React.FC = () => {
   const [isSeedingData, setIsSeedingData] = useState<boolean>(false);
   const [seedMessage, setSeedMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [copiedSql, setCopiedSql] = useState<boolean>(false);
+  const [copiedCredentials, setCopiedCredentials] = useState<boolean>(false);
 
   // Carregar lista de usuários reais
   const loadUsers = async () => {
     setIsLoadingUsers(true);
     try {
       const list = await authService.listCondominiumUsers();
-      if (list && list.length > 0) {
-        setUsersList(list);
+      // Filtrar apenas usuários com acesso ativo
+      const activeList = (list || []).filter((u) => u.ativo !== false);
+      if (activeList.length > 0) {
+        setUsersList(activeList);
       } else if (user) {
         setUsersList([
           {
@@ -219,15 +222,19 @@ export const ConfiguracoesPage: React.FC = () => {
 
   const handleConfirmDelete = async () => {
     if (!deletingUser) return;
+    const targetUserId = deletingUser.id;
     setIsSubmittingDelete(true);
     setDeleteUserError('');
 
     try {
-      const res = await authService.deleteMoradorUser(deletingUser.id);
+      const res = await authService.deleteMoradorUser(targetUserId);
       if (res.success) {
+        // Limpa o usuário da lista imediatamente no estado local da tela
+        setUsersList((prev) => prev.filter((u) => u.id !== targetUserId));
         setIsDeleteUserModalOpen(false);
         setDeletingUser(null);
         setActionFeedback({ type: 'success', message: 'Usuário excluído com sucesso.' });
+        // Recarrega lista garantindo sincronismo com o banco
         await loadUsers();
       } else {
         setDeleteUserError(res.message || 'Erro ao excluir usuário.');
@@ -1021,15 +1028,41 @@ export const ConfiguracoesPage: React.FC = () => {
           title="Usuário criado com sucesso."
           maxWidth="md"
           footer={
-            <Button
-              id="btn-close-success-modal"
-              variant="primary"
-              size="md"
-              className="w-full sm:w-auto"
-              onClick={() => setCreatedUserSuccess(null)}
-            >
-              Fechar
-            </Button>
+            <div className="flex flex-col-reverse sm:flex-row items-center justify-end gap-2 sm:gap-3 w-full">
+              <Button
+                id="btn-copy-success-credentials"
+                type="button"
+                variant="outline"
+                size="md"
+                className="w-full sm:w-auto"
+                onClick={() => {
+                  if (!createdUserSuccess) return;
+                  const message = `*Acesso ao Sistema do Condomínio*\n` +
+                    `🏢 Apartamento / Unidade: ${createdUserSuccess.unitNumber}\n` +
+                    `👤 Responsável: ${createdUserSuccess.responsibleName}\n` +
+                    `🔑 Senha inicial provisória: ${createdUserSuccess.initialPassword}\n\n` +
+                    `Para acessar, entre com seu apartamento e a senha provisória acima. No primeiro login, você cadastrará sua senha pessoal de 6 números.`;
+                  navigator.clipboard.writeText(message);
+                  setCopiedCredentials(true);
+                  setTimeout(() => setCopiedCredentials(false), 3000);
+                }}
+                leftIcon={copiedCredentials ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+              >
+                {copiedCredentials ? 'Dados copiados!' : 'Copiar dados de acesso'}
+              </Button>
+              <Button
+                id="btn-close-success-modal"
+                variant="primary"
+                size="md"
+                className="w-full sm:w-auto"
+                onClick={() => {
+                  setCreatedUserSuccess(null);
+                  setCopiedCredentials(false);
+                }}
+              >
+                Concluir
+              </Button>
+            </div>
           }
         >
           <div className="space-y-4 text-sm">
