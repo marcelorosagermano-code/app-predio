@@ -94,11 +94,18 @@ export const onboardingService = {
         body: JSON.stringify(requestBody),
       });
 
-      const json = await response.json();
-      if (!response.ok || !json.success) {
+      const text = await response.text().catch(() => '');
+      let json: any = null;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        json = null;
+      }
+
+      if (!response.ok || !json?.success) {
         return {
           success: false,
-          error: json.error || 'Erro ao realizar onboarding no servidor.',
+          error: json?.error || 'Erro ao realizar onboarding no servidor.',
         };
       }
 

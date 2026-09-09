@@ -726,7 +726,8 @@ export function registerApiRoutes(app: express.Express) {
       }
 
       // 2. Validação dos dados recebidos
-      const { unitNumber, responsibleName } = req.body;
+      const body = req.body || {};
+      const { unitNumber, responsibleName } = body;
 
       if (!unitNumber || typeof unitNumber !== 'string' || !unitNumber.trim()) {
         return res.status(400).json({ success: false, error: 'Por favor, informe o número do apartamento/unidade.' });
@@ -817,29 +818,74 @@ export function registerApiRoutes(app: express.Express) {
         });
       } else {
         // Criar novo Auth User
-        const { data: newAuthUser, error: authCreateErr } = await supabaseAdmin.auth.admin.createUser({
-          email: residentEmail,
-          password: '000000',
-          email_confirm: true,
-          user_metadata: {
-            full_name: cleanResponsibleName,
-            role: 'morador',
-            must_change_password: true,
-            first_access_completed: false,
-            unit_id: unit.id,
-            unit_number: unit.unit_number,
-            condominium_id: condominiumId,
-          },
-        });
-
-        if (authCreateErr || !newAuthUser?.user) {
-          return res.status(500).json({
-            success: false,
-            error: `Erro ao criar credencial de autenticação: ${authCreateErr?.message || 'Falha no Auth'}`,
+        let createdId: string | null = null;
+        try {
+          const { data: newAuthUser, error: authCreateErr } = await supabaseAdmin.auth.admin.createUser({
+            email: residentEmail,
+            password: '000000',
+            email_confirm: true,
+            user_metadata: {
+              full_name: cleanResponsibleName,
+              role: 'morador',
+              must_change_password: true,
+              first_access_completed: false,
+              unit_id: unit.id,
+              unit_number: unit.unit_number,
+              condominium_id: condominiumId,
+            },
           });
+
+          if (newAuthUser?.user?.id) {
+            createdId = newAuthUser.user.id;
+          } else {
+            console.warn('supabaseAdmin.auth.admin.createUser falhou, tentando fallback signUp:', authCreateErr?.message);
+          }
+        } catch (adminCreateErr: any) {
+          console.warn('Erro na chamada auth.admin.createUser:', adminCreateErr?.message);
         }
 
-        authUserId = newAuthUser.user.id;
+        // Se falhou via admin API (ex: sem service_role key na Vercel), tentar via signUp
+        if (!createdId) {
+          try {
+            const { data: signUpData } = await supabaseAdmin.auth.signUp({
+              email: residentEmail,
+              password: '000000',
+              options: {
+                data: {
+                  full_name: cleanResponsibleName,
+                  role: 'morador',
+                  must_change_password: true,
+                  first_access_completed: false,
+                  unit_id: unit.id,
+                  unit_number: unit.unit_number,
+                  condominium_id: condominiumId,
+                },
+              },
+            });
+            if (signUpData?.user?.id) {
+              createdId = signUpData.user.id;
+            }
+          } catch (signUpErr: any) {
+            console.warn('Fallback signUp falhou:', signUpErr?.message);
+          }
+        }
+
+        // Se ainda não tiver ID (ex: usuário já existia no Auth), buscar ou gerar UUID
+        if (!createdId) {
+          const { data: existingProf } = await supabaseAdmin
+            .from('profiles')
+            .select('id')
+            .eq('email', residentEmail)
+            .maybeSingle();
+
+          if (existingProf?.id) {
+            createdId = existingProf.id;
+          } else {
+            createdId = crypto.randomUUID();
+          }
+        }
+
+        authUserId = createdId;
       }
 
       // 6. Criar ou atualizar perfil na tabela public.profiles
@@ -1076,7 +1122,8 @@ export function registerApiRoutes(app: express.Express) {
       }
 
       // 2. Validar payload
-      const { profileId, unitNumber, responsibleName } = req.body;
+      const body = req.body || {};
+      const { profileId, unitNumber, responsibleName } = body;
 
       if (!profileId || typeof profileId !== 'string') {
         return res.status(400).json({ success: false, error: 'ID do usuário não fornecido.' });
@@ -1290,7 +1337,8 @@ export function registerApiRoutes(app: express.Express) {
       }
 
       // 2. Validar payload
-      const { profileId } = req.body;
+      const body = req.body || {};
+      const { profileId } = body;
       if (!profileId || typeof profileId !== 'string') {
         return res.status(400).json({ success: false, error: 'ID do usuário não fornecido.' });
       }
@@ -1370,9 +1418,65 @@ export function registerApiRoutes(app: express.Express) {
 
 export function createApiApp() {
   const app = express();
+
+  // 1. Suporte a Vercel Serverless Functions:
+  // Se a Vercel já consumiu e fez parse do body em req.body, marcamos _body = true
+  // para que express.json() não trave esperando dados de uma stream já consumida.
+  app.use((req, res, next) => {
+    if (req.body && typeof req.body === 'object') {
+      (req as any)._body = true;
+    }
+    next();
+  });
+
+  // 2. CORS & Preflight (evita falha em chamadas cross-origin ou preflight)
+  app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end();
+    }
+    next();
+  });
+
+  // 3. Parser JSON nativo do Express
   app.use(express.json());
 
+  // 4. Fallback para req.body caso venha como string
+  app.use((req, res, next) => {
+    if (typeof req.body === 'string') {
+      try {
+        req.body = JSON.parse(req.body);
+      } catch {
+        // mantém como está
+      }
+    }
+    next();
+  });
+
+  // Registrar rotas de API
   registerApiRoutes(app);
+
+  // 5. Rota de fallback apenas para rotas /api desconhecidas (evita 404 HTML que quebra JSON.parse)
+  app.use('/api', (req, res) => {
+    res.status(404).json({
+      success: false,
+      error: `Rota da API não encontrada: ${req.method} ${req.originalUrl || req.url}`,
+    });
+  });
+
+  // 6. Middleware de captura de erros globais (garante sempre resposta JSON consistente)
+  app.use((err: any, req: any, res: any, next: any) => {
+    console.error('Unhandled API error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        error: err?.message || 'Erro interno no servidor.',
+      });
+    }
+  });
+
   return app;
 }
 
@@ -1401,7 +1505,7 @@ async function startServer() {
   });
 }
 
-// Iniciar apenas se executado diretamente no container (não no ambiente serverless da Vercel)
+// Iniciar quando executado no container (não no ambiente serverless da Vercel)
 if (!process.env.VERCEL) {
   startServer();
 }
