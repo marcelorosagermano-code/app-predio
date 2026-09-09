@@ -1,27 +1,25 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Building2,
   Search,
   Plus,
-  Filter,
   User,
   Phone,
   Mail,
-  Car,
-  MoreVertical,
-  CheckCircle2,
-  AlertTriangle,
-  Clock,
   Eye,
-  Edit2,
+  RefreshCw,
+  AlertTriangle,
 } from 'lucide-react';
-import { mockUnidades } from '../../services/mockData';
-import { Unidade, SituacaoUnidade } from '../../types';
+import { useAuth } from '../../contexts/AuthContext';
+import { unitService, UnitWithRelations } from '../../services/supabase/unitService';
+import { SituacaoUnidade, SituacaoFinanceiraUnidade } from '../../types';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
 import { Badge } from '../../components/ui/Badge';
-import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/Card';
+import { Card } from '../../components/ui/Card';
 import { Modal } from '../../components/ui/Modal';
+import { EmptyState } from '../../components/ui/EmptyState';
+import { Alert } from '../../components/ui/Alert';
 import {
   Table,
   TableHead,
@@ -31,13 +29,162 @@ import {
   TableCell,
 } from '../../components/ui/Table';
 
+interface DisplayUnidade {
+  id: string;
+  condominioId: string;
+  numero: string;
+  bloco?: string;
+  andar?: number;
+  metragem?: number;
+  fracaoIdeal?: number;
+  situacao: SituacaoUnidade;
+  situacaoFinanceira: SituacaoFinanceiraUnidade;
+  proprietarioNome: string;
+  proprietarioEmail: string;
+  proprietarioTelefone: string;
+  moradorNome?: string;
+  moradorEmail?: string;
+  moradorTelefone?: string;
+  vagasGaragem?: string;
+  observacoes?: string;
+  criadoEm: string;
+  atualizadoEm: string;
+}
+
 export const UnidadesPage: React.FC = () => {
+  const { condominium, user, isAdmin } = useAuth();
+  const condoId = condominium?.id || user?.condominiumId;
+
+  const [unidades, setUnidades] = useState<DisplayUnidade[]>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
-  const [selectedUnidade, setSelectedUnidade] = useState<Unidade | null>(null);
+  const [selectedUnidade, setSelectedUnidade] = useState<DisplayUnidade | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 
-  const filteredUnidades = mockUnidades.filter((u) => {
+  // Formulário de Nova Unidade
+  const [novoNumero, setNovoNumero] = useState('');
+  const [novoBloco, setNovoBloco] = useState('Bloco A');
+  const [novoAndar, setNovoAndar] = useState('1');
+  const [novaMetragem, setNovaMetragem] = useState('65');
+  const [novoProprietarioNome, setNovoProprietarioNome] = useState('');
+  const [novoProprietarioEmail, setNovoProprietarioEmail] = useState('');
+  const [novoProprietarioTelefone, setNovoProprietarioTelefone] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const mapUnitToDisplay = (u: UnitWithRelations): DisplayUnidade => {
+    const primaryOwner = u.owners?.find((o) => o.is_primary) || u.owners?.[0];
+    const primaryResident = u.residents?.find((r) => r.is_primary) || u.residents?.[0];
+
+    const sit: SituacaoUnidade =
+      u.status === 'vacant'
+        ? 'DESOCUPADA'
+        : u.status === 'under_renovation'
+        ? 'EM_REFORMA'
+        : primaryResident
+        ? 'OCUPADA_INQUILINO'
+        : 'OCUPADA_PROPRIETARIO';
+
+    return {
+      id: u.id,
+      condominioId: u.condominium_id,
+      numero: u.unit_number,
+      bloco: u.block || undefined,
+      andar: u.floor || undefined,
+      metragem: u.sqm || undefined,
+      fracaoIdeal: u.ideal_fraction || undefined,
+      situacao: sit,
+      situacaoFinanceira: 'EM_DIA',
+      proprietarioNome: primaryOwner?.name || 'Não informado',
+      proprietarioEmail: primaryOwner?.email || '-',
+      proprietarioTelefone: primaryOwner?.phone || '-',
+      moradorNome: primaryResident?.name,
+      moradorEmail: primaryResident?.email,
+      moradorTelefone: primaryResident?.phone,
+      vagasGaragem: 'Conforme convenção',
+      criadoEm: u.created_at,
+      atualizadoEm: u.updated_at,
+    };
+  };
+
+  const loadUnidades = useCallback(async () => {
+    if (!condoId) {
+      setUnidades([]);
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const data = await unitService.listByCondominium(condoId);
+      setUnidades(data.map(mapUnitToDisplay));
+    } catch (err: any) {
+      console.error('Erro ao buscar unidades do Supabase:', err);
+      setError(err?.message || 'Não foi possível carregar as unidades do banco de dados.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [condoId]);
+
+  useEffect(() => {
+    loadUnidades();
+  }, [loadUnidades]);
+
+  const handleCreateUnidade = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!condoId) return;
+
+    if (!novoNumero.trim()) {
+      setFormError('Número da unidade é obrigatório.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setFormError(null);
+
+    try {
+      const created = await unitService.create({
+        condominium_id: condoId,
+        unit_number: novoNumero.trim(),
+        block: novoBloco.trim() || null,
+        floor: parseInt(novoAndar, 10) || 1,
+        sqm: parseFloat(novaMetragem) || 50,
+        ideal_fraction: 0.025,
+        status: 'occupied',
+      });
+
+      if (novoProprietarioNome.trim()) {
+        await unitService.addOwner({
+          unit_id: created.id,
+          name: novoProprietarioNome.trim(),
+          email: novoProprietarioEmail.trim() || null,
+          phone: novoProprietarioTelefone.trim() || null,
+          is_primary: true,
+        });
+      }
+
+      // Reset form
+      setNovoNumero('');
+      setNovoProprietarioNome('');
+      setNovoProprietarioEmail('');
+      setNovoProprietarioTelefone('');
+      setIsCreateModalOpen(false);
+      await loadUnidades();
+    } catch (err: any) {
+      console.error('Erro ao cadastrar unidade:', err);
+      setFormError(err?.message || 'Falha ao salvar unidade no Supabase.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const filteredUnidades = unidades.filter((u) => {
     const matchesSearch =
       u.numero.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (u.bloco && u.bloco.toLowerCase().includes(searchTerm.toLowerCase())) ||
@@ -66,7 +213,7 @@ export const UnidadesPage: React.FC = () => {
     }
   };
 
-  const handleOpenDetail = (unidade: Unidade) => {
+  const handleOpenDetail = (unidade: DisplayUnidade) => {
     setSelectedUnidade(unidade);
     setIsDetailModalOpen(true);
   };
@@ -80,19 +227,39 @@ export const UnidadesPage: React.FC = () => {
             Cadastro e Gestão de Unidades
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Total de {mockUnidades.length} unidades cadastradas no condomínio
+            Total de {unidades.length} unidades cadastradas no condomínio (Fonte: Supabase)
           </p>
         </div>
 
-        <Button
-          variant="primary"
-          size="md"
-          leftIcon={<Plus className="w-4 h-4" />}
-          onClick={() => {}}
-        >
-          Nova Unidade
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="md"
+            leftIcon={<RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />}
+            onClick={loadUnidades}
+            disabled={isLoading}
+          >
+            Atualizar
+          </Button>
+
+          {isAdmin && (
+            <Button
+              variant="primary"
+              size="md"
+              leftIcon={<Plus className="w-4 h-4" />}
+              onClick={() => setIsCreateModalOpen(true)}
+            >
+              Nova Unidade
+            </Button>
+          )}
+        </div>
       </div>
+
+      {error && (
+        <Alert type="error" title="Erro de Comunicação">
+          {error}
+        </Alert>
+      )}
 
       {/* Filters and Search */}
       <Card className="p-4">
@@ -125,92 +292,217 @@ export const UnidadesPage: React.FC = () => {
         </div>
       </Card>
 
-      {/* Units Table */}
-      <Table id="table-unidades">
-        <TableHead>
-          <TableRow>
-            <TableHeaderCell>Unidade</TableHeaderCell>
-            <TableHeaderCell>Proprietário</TableHeaderCell>
-            <TableHeaderCell>Morador / Contato</TableHeaderCell>
-            <TableHeaderCell>Ocupação</TableHeaderCell>
-            <TableHeaderCell>Situação Financeira</TableHeaderCell>
-            <TableHeaderCell className="text-right">Ações</TableHeaderCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {filteredUnidades.map((unidade) => (
-            <TableRow key={unidade.id}>
-              <TableCell>
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-700 font-bold text-xs flex items-center justify-center border border-indigo-100 shrink-0">
-                    {unidade.numero}
-                  </div>
-                  <div>
-                    <p className="font-bold text-slate-900 text-xs">
-                      Apto {unidade.numero}
-                    </p>
-                    <p className="text-[11px] text-slate-400">
-                      {unidade.bloco || 'Principal'} • {unidade.metragem} m²
-                    </p>
-                  </div>
-                </div>
-              </TableCell>
-
-              <TableCell>
-                <p className="font-semibold text-slate-800 text-xs">{unidade.proprietarioNome}</p>
-                <p className="text-[11px] text-slate-400">{unidade.proprietarioEmail}</p>
-              </TableCell>
-
-              <TableCell>
-                <p className="text-slate-700 text-xs font-medium">
-                  {unidade.moradorNome || unidade.proprietarioNome}
-                </p>
-                <p className="text-[11px] text-slate-400">{unidade.moradorTelefone || unidade.proprietarioTelefone}</p>
-              </TableCell>
-
-              <TableCell>
-                <span className="text-xs text-slate-600">
-                  {getSituacaoLabel(unidade.situacao)}
-                </span>
-              </TableCell>
-
-              <TableCell>
-                <Badge
-                  variant={
-                    unidade.situacaoFinanceira === 'EM_DIA'
-                      ? 'success'
-                      : unidade.situacaoFinanceira === 'PENDENTE'
-                      ? 'warning'
-                      : 'danger'
-                  }
-                  size="sm"
-                  dot
-                >
-                  {unidade.situacaoFinanceira === 'EM_DIA'
-                    ? 'Em Dia'
-                    : unidade.situacaoFinanceira === 'PENDENTE'
-                    ? 'Pendente'
-                    : 'Inadimplente'}
-                </Badge>
-              </TableCell>
-
-              <TableCell className="text-right">
-                <div className="flex items-center justify-end gap-1">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleOpenDetail(unidade)}
-                    className="p-1.5 text-slate-500 hover:text-indigo-600"
-                    title="Ver detalhes da unidade"
-                  >
-                    <Eye className="w-4 h-4" />
-                  </Button>
-                </div>
-              </TableCell>
+      {/* Table or Loading or Empty State */}
+      {isLoading ? (
+        <div className="flex items-center justify-center p-12 bg-white rounded-xl border border-slate-200">
+          <div className="flex flex-col items-center gap-2">
+            <RefreshCw className="w-6 h-6 animate-spin text-indigo-600" />
+            <span className="text-xs text-slate-500">Carregando unidades do Supabase...</span>
+          </div>
+        </div>
+      ) : unidades.length === 0 ? (
+        <EmptyState
+          icon={<Building2 className="w-6 h-6" />}
+          title="Nenhuma unidade cadastrada"
+          description="Cadastre as unidades do condomínio para gerenciar moradores, proprietários e lançamentos financeiros."
+          actionLabel={isAdmin ? 'Cadastrar Primeira Unidade' : undefined}
+          onAction={isAdmin ? () => setIsCreateModalOpen(true) : undefined}
+        />
+      ) : (
+        <Table id="table-unidades">
+          <TableHead>
+            <TableRow>
+              <TableHeaderCell>Unidade</TableHeaderCell>
+              <TableHeaderCell>Proprietário</TableHeaderCell>
+              <TableHeaderCell>Morador / Contato</TableHeaderCell>
+              <TableHeaderCell>Ocupação</TableHeaderCell>
+              <TableHeaderCell>Situação Financeira</TableHeaderCell>
+              <TableHeaderCell className="text-right">Ações</TableHeaderCell>
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          </TableHead>
+          <TableBody>
+            {filteredUnidades.map((unidade) => (
+              <TableRow key={unidade.id}>
+                <TableCell>
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-700 font-bold text-xs flex items-center justify-center border border-indigo-100 shrink-0">
+                      {unidade.numero}
+                    </div>
+                    <div>
+                      <p className="font-bold text-slate-900 text-xs">
+                        Apto {unidade.numero}
+                      </p>
+                      <p className="text-[11px] text-slate-400">
+                        {unidade.bloco || 'Principal'} • {unidade.metragem || 0} m²
+                      </p>
+                    </div>
+                  </div>
+                </TableCell>
+
+                <TableCell>
+                  <p className="font-semibold text-slate-800 text-xs">{unidade.proprietarioNome}</p>
+                  <p className="text-[11px] text-slate-400">{unidade.proprietarioEmail}</p>
+                </TableCell>
+
+                <TableCell>
+                  <p className="text-slate-700 text-xs font-medium">
+                    {unidade.moradorNome || unidade.proprietarioNome}
+                  </p>
+                  <p className="text-[11px] text-slate-400">{unidade.moradorTelefone || unidade.proprietarioTelefone}</p>
+                </TableCell>
+
+                <TableCell>
+                  <span className="text-xs text-slate-600">
+                    {getSituacaoLabel(unidade.situacao)}
+                  </span>
+                </TableCell>
+
+                <TableCell>
+                  <Badge
+                    variant={
+                      unidade.situacaoFinanceira === 'EM_DIA'
+                        ? 'success'
+                        : unidade.situacaoFinanceira === 'PENDENTE'
+                        ? 'warning'
+                        : 'danger'
+                    }
+                    size="sm"
+                    dot
+                  >
+                    {unidade.situacaoFinanceira === 'EM_DIA'
+                      ? 'Em Dia'
+                      : unidade.situacaoFinanceira === 'PENDENTE'
+                      ? 'Pendente'
+                      : 'Inadimplente'}
+                  </Badge>
+                </TableCell>
+
+                <TableCell className="text-right">
+                  <div className="flex items-center justify-end gap-1">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => handleOpenDetail(unidade)}
+                      className="p-1.5 text-slate-500 hover:text-indigo-600"
+                      title="Ver detalhes da unidade"
+                    >
+                      <Eye className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+
+      {/* Modal Nova Unidade */}
+      <Modal
+        isOpen={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        title="Cadastrar Nova Unidade"
+        description="Adicione uma nova unidade residencial ao condomínio"
+      >
+        <form onSubmit={handleCreateUnidade} className="space-y-3 text-xs">
+          {formError && (
+            <Alert type="error" title="Atenção">
+              {formError}
+            </Alert>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">Número / Identificador *</label>
+              <Input
+                placeholder="Ex: 101, 204"
+                value={novoNumero}
+                onChange={(e) => setNovoNumero(e.target.value)}
+                required
+              />
+            </div>
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">Bloco / Torre</label>
+              <Input
+                placeholder="Ex: Bloco A"
+                value={novoBloco}
+                onChange={(e) => setNovoBloco(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">Andar</label>
+              <Input
+                type="number"
+                placeholder="1"
+                value={novoAndar}
+                onChange={(e) => setNovoAndar(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">Metragem (m²)</label>
+              <Input
+                type="number"
+                placeholder="65"
+                value={novaMetragem}
+                onChange={(e) => setNovaMetragem(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-slate-100 space-y-2">
+            <h4 className="font-bold text-slate-800">Proprietário (Opcional)</h4>
+            <div>
+              <label className="block text-slate-600 mb-0.5">Nome Completo</label>
+              <Input
+                placeholder="Nome do proprietário"
+                value={novoProprietarioNome}
+                onChange={(e) => setNovoProprietarioNome(e.target.value)}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-slate-600 mb-0.5">E-mail</label>
+                <Input
+                  type="email"
+                  placeholder="email@exemplo.com"
+                  value={novoProprietarioEmail}
+                  onChange={(e) => setNovoProprietarioEmail(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-slate-600 mb-0.5">Telefone</label>
+                <Input
+                  placeholder="(11) 99999-9999"
+                  value={novoProprietarioTelefone}
+                  onChange={(e) => setNovoProprietarioTelefone(e.target.value)}
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-3">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setIsCreateModalOpen(false)}
+              disabled={isSubmitting}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              size="sm"
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? 'Salvando...' : 'Salvar Unidade'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
 
       {/* Detail Modal */}
       {selectedUnidade && (
@@ -231,13 +523,13 @@ export const UnidadesPage: React.FC = () => {
               <div>
                 <p className="text-slate-400 text-[11px]">Número / Bloco</p>
                 <p className="font-bold text-slate-800 text-sm">
-                  {selectedUnidade.numero} ({selectedUnidade.bloco})
+                  {selectedUnidade.numero} ({selectedUnidade.bloco || 'Principal'})
                 </p>
               </div>
               <div>
                 <p className="text-slate-400 text-[11px]">Metragem / Fração Ideal</p>
                 <p className="font-bold text-slate-800 text-sm">
-                  {selectedUnidade.metragem} m² ({selectedUnidade.fracaoIdeal})
+                  {selectedUnidade.metragem || 0} m² ({selectedUnidade.fracaoIdeal || '-'})
                 </p>
               </div>
               <div>
@@ -276,13 +568,6 @@ export const UnidadesPage: React.FC = () => {
                 <p className="text-slate-700">Nome: <span className="font-medium">{selectedUnidade.moradorNome}</span></p>
                 <p className="text-slate-700">Email: <span className="font-medium">{selectedUnidade.moradorEmail || '-'}</span></p>
                 <p className="text-slate-700">Telefone: <span className="font-medium">{selectedUnidade.moradorTelefone || '-'}</span></p>
-              </div>
-            )}
-
-            {selectedUnidade.observacoes && (
-              <div className="p-3 bg-amber-50/60 border border-amber-200 rounded-xl">
-                <p className="font-semibold text-amber-900 text-[11px]">Observações Cadastrais:</p>
-                <p className="text-amber-800 text-xs mt-0.5">{selectedUnidade.observacoes}</p>
               </div>
             )}
           </div>

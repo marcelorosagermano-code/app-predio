@@ -27,7 +27,6 @@ import { authService } from '../../services/supabase/authService';
 import { isSupabaseConfigured } from '../../services/supabase/client';
 import {
   runSupabaseDiagnostics,
-  seedInitialDataToSupabase,
   SupabaseDiagnosticReport,
 } from '../../services/supabase/diagnostics';
 import { SUPABASE_STAGE_2_SQL } from '../../services/supabase/rawSchema';
@@ -123,8 +122,6 @@ export const ConfiguracoesPage: React.FC = () => {
   // Estados para o diagnóstico em tempo real do Supabase
   const [diagnosticReport, setDiagnosticReport] = useState<SupabaseDiagnosticReport | null>(null);
   const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
-  const [isSeedingData, setIsSeedingData] = useState<boolean>(false);
-  const [seedMessage, setSeedMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [copiedSql, setCopiedSql] = useState<boolean>(false);
   const [copiedCredentials, setCopiedCredentials] = useState<boolean>(false);
 
@@ -284,7 +281,6 @@ export const ConfiguracoesPage: React.FC = () => {
   // Executar teste de conexão ao abrir a aba
   const handleTestConnection = async () => {
     setIsTestingConnection(true);
-    setSeedMessage(null);
     try {
       const report = await runSupabaseDiagnostics();
       setDiagnosticReport(report);
@@ -300,24 +296,6 @@ export const ConfiguracoesPage: React.FC = () => {
       handleTestConnection();
     }
   }, [activeTab]);
-
-  const handleSeedData = async () => {
-    setIsSeedingData(true);
-    setSeedMessage(null);
-    try {
-      const res = await seedInitialDataToSupabase();
-      if (res.success) {
-        setSeedMessage({ type: 'success', text: res.message });
-        await handleTestConnection(); // Atualizar status das tabelas
-      } else {
-        setSeedMessage({ type: 'error', text: res.message });
-      }
-    } catch (err: any) {
-      setSeedMessage({ type: 'error', text: err.message || 'Erro ao sincronizar' });
-    } finally {
-      setIsSeedingData(false);
-    }
-  };
 
   return (
     <div className="space-y-6">
@@ -833,13 +811,6 @@ export const ConfiguracoesPage: React.FC = () => {
                 </Alert>
               )}
 
-              {/* Feedback de Sincronização */}
-              {seedMessage && (
-                <Alert type={seedMessage.type === 'success' ? 'success' : 'error'} title="Sincronização">
-                  {seedMessage.text}
-                </Alert>
-              )}
-
               {/* Checklist de Tabelas */}
               {diagnosticReport?.tables && diagnosticReport.tables.length > 0 && (
                 <div className="space-y-2 pt-2">
@@ -848,17 +819,6 @@ export const ConfiguracoesPage: React.FC = () => {
                       <Server className="w-3.5 h-3.5 text-indigo-600" />
                       Status Individual das Tabelas no Supabase:
                     </h4>
-                    {diagnosticReport.schemaReady && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={handleSeedData}
-                        disabled={isSeedingData}
-                        leftIcon={<Zap className="w-3 h-3 text-amber-500" />}
-                      >
-                        {isSeedingData ? 'Sincronizando...' : 'Popular Dados Iniciais no Supabase'}
-                      </Button>
-                    )}
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">

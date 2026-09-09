@@ -2,7 +2,6 @@ import { createClient, Session } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from './client';
 import { UserRole } from '../../types/database';
 import { AuthUserProfile, AuthCondominium, PermissionId } from '../../types/auth';
-import { mockUsuarios } from '../mockData';
 
 // Permissões padrão do sistema de acordo com a migration oficial
 const ROLE_PERMISSIONS_FALLBACK: Record<UserRole, PermissionId[]> = {
@@ -689,35 +688,8 @@ export const authService = {
 
     const session = await this.getValidSession();
 
-    // Se não há sessão ativa, verificar fallback para modo de demonstração / local
     if (!session?.access_token) {
-      const localUserId = localStorage.getItem('gestao_condominio_user_id') || localStorage.getItem('gestao_condominial_user_id');
-      if (localUserId || !isSupabaseConfigured) {
-        const newMockId = 'user-morador-' + Date.now();
-        const newMockUser: any = {
-          id: newMockId,
-          email: `morador.ap${cleanUnit.toLowerCase().replace(/[^a-z0-9]/g, '')}@condominio.app`,
-          nome: cleanName,
-          role: 'morador',
-          cargo: 'Morador',
-          condominioId: 'cond-01',
-          unidadeNumero: cleanUnit,
-          ativo: true,
-          criadoEm: new Date().toISOString(),
-        };
-        mockUsuarios.push(newMockUser);
-        return {
-          success: true,
-          message: `Usuário morador para a Unidade ${cleanUnit} cadastrado com sucesso.`,
-          data: {
-            unitNumber: cleanUnit,
-            responsibleName: cleanName,
-            initialPassword: '000000',
-            profileId: newMockId,
-          },
-        };
-      }
-      throw new Error('Sessão expirada. Por favor, faça login novamente para continuar.');
+      throw new Error('Sessão expirada ou não autenticada. Por favor, faça login novamente para continuar.');
     }
 
     // 1. Tentar criar via endpoint server-side /api/admin/create-morador-user com auto-refresh
@@ -927,18 +899,7 @@ export const authService = {
     const session = await this.getValidSession();
 
     if (!session?.access_token) {
-      // Modo local / demonstração
-      return mockUsuarios.map((u) => ({
-        id: u.id,
-        nome: u.nome,
-        email: u.email,
-        role: u.role,
-        cargo: u.cargo || (u.role === 'admin' ? 'Administrador' : u.role === 'sindico' ? 'Síndico' : 'Morador'),
-        ativo: u.ativo,
-        unidadeNumero: u.unidadeNumero || null,
-        primeiroAcessoPendente: u.role === 'morador',
-        criadoEm: u.criadoEm || new Date().toISOString(),
-      }));
+      return [];
     }
 
     // 1. Tentar buscar via endpoint server-side /api/admin/list-users com auto-refresh
@@ -1033,16 +994,7 @@ export const authService = {
 
     const session = await this.getValidSession();
     if (!session?.access_token) {
-      const mockU = mockUsuarios.find((u) => u.id === profileId);
-      if (mockU) {
-        mockU.nome = cleanName;
-        mockU.unidadeNumero = cleanUnit;
-      }
-      return {
-        success: true,
-        message: `Dados da Unidade ${cleanUnit} atualizados com sucesso.`,
-        data: { profileId, unitNumber: cleanUnit, responsibleName: cleanName },
-      };
+      throw new Error('Sessão expirada ou não autenticada. Por favor, faça login novamente para continuar.');
     }
 
     // 1. Tentar via endpoint server-side /api/admin/update-morador-user com auto-refresh
@@ -1153,14 +1105,7 @@ export const authService = {
   async deleteMoradorUser(profileId: string): Promise<{ success: boolean; message: string }> {
     const session = await this.getValidSession();
     if (!session?.access_token) {
-      const idx = mockUsuarios.findIndex((u) => u.id === profileId);
-      if (idx >= 0) {
-        mockUsuarios.splice(idx, 1);
-      }
-      return {
-        success: true,
-        message: 'Usuário excluído com sucesso.',
-      };
+      throw new Error('Sessão expirada ou não autenticada. Por favor, faça login novamente para continuar.');
     }
 
     // 1. Tentar via endpoint server-side /api/admin/delete-morador-user com auto-refresh

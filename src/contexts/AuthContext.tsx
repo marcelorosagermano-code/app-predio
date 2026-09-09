@@ -10,8 +10,19 @@ import {
   PermissionId,
   OnboardingPayload,
 } from '../types/auth';
-import { mockCondominio, mockUsuarios } from '../services/mockData';
 import { UserProfile, Condominio } from '../types';
+
+const defaultEmptyCondominio: Condominio = {
+  id: '',
+  nome: 'Condomínio',
+  endereco: '',
+  cidade: '',
+  estado: '',
+  totalUnidades: 0,
+  sindicoNome: '',
+  telefoneContato: '',
+  emailContato: '',
+};
 
 interface AuthContextType {
   status: AuthStatus;
@@ -39,7 +50,7 @@ interface AuthContextType {
   updatePassword: (password: string) => Promise<{ success: boolean; error?: string }>;
   refreshSession: () => Promise<void>;
   completeOnboarding: (data: OnboardingPayload) => Promise<{ success: boolean; error?: string }>;
-  // Legado e suporte a testes rápidos locais
+  // Legado mantido para compatibilidade estrita de interface sem dados mock
   switchProfile: (profileId: string) => void;
   availableDemoUsers: UserProfile[];
   legacyUser: UserProfile | null;
@@ -48,7 +59,6 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-const STORAGE_KEY_USER_ID = 'gestao_condominial_user_id';
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [status, setStatus] = useState<AuthStatus>('LOADING');
@@ -56,7 +66,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [condominium, setCondominium] = useState<AuthCondominium | null>(null);
   const [permissions, setPermissions] = useState<PermissionId[]>([]);
   const [legacyUser, setLegacyUser] = useState<UserProfile | null>(null);
-  const [legacyCondominio, setLegacyCondominio] = useState<Condominio>(mockCondominio);
+  const [legacyCondominio, setLegacyCondominio] = useState<Condominio>(defaultEmptyCondominio);
   const currentUserRef = useRef<AuthUserProfile | null>(null);
 
   useEffect(() => {
@@ -232,16 +242,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
       }
 
-      // Se não há sessão Supabase, checar fallback de demonstração local
+      // Se não há sessão Supabase, definir como não autenticado
       if (isMounted) {
-        const savedUserId = localStorage.getItem(STORAGE_KEY_USER_ID);
-        if (savedUserId) {
-          const found = mockUsuarios.find((u) => u.id === savedUserId);
-          if (found) {
-            setupMockUser(found);
-            return;
-          }
-        }
         setStatus('UNAUTHENTICATED');
       }
     }
@@ -309,64 +311,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [loadUserData]);
-
-  /**
-   * Configuração de usuário mock para ambiente local/demo
-   */
-  const setupMockUser = (mockUser: UserProfile) => {
-    setLegacyUser(mockUser);
-    const mockRole = mockUser.role;
-    setUser({
-      id: mockUser.id,
-      email: mockUser.email,
-      fullName: mockUser.nome,
-      phone: mockUser.telefone || null,
-      avatarUrl: mockUser.avatarUrl || null,
-      role: mockRole,
-      condominiumId: mockUser.condominioId,
-      unitId: mockUser.unidadeId || null,
-      unitNumber: mockUser.unidadeNumero || null,
-      isActive: mockUser.ativo,
-      createdAt: mockUser.criadoEm,
-      updatedAt: mockUser.criadoEm,
-    });
-    setCondominium({
-      id: mockCondominio.id,
-      name: mockCondominio.nome,
-      document: mockCondominio.cnpj || null,
-      address: mockCondominio.endereco,
-      city: mockCondominio.cidade,
-      state: mockCondominio.estado,
-      zipCode: mockCondominio.cep || null,
-      phone: mockCondominio.telefoneContato,
-      email: mockCondominio.emailContato,
-      totalUnits: mockCondominio.totalUnidades,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-    setPermissions(
-      mockRole === 'admin'
-        ? [
-            'dashboard:view',
-            'units:view', 'units:create', 'units:update', 'units:delete',
-            'financial:view_all', 'financial:view_own', 'financial:create', 'financial:update', 'financial:delete',
-            'maintenance:view_all', 'maintenance:view_own', 'maintenance:create', 'maintenance:update', 'maintenance:delete',
-            'announcements:view', 'announcements:create', 'announcements:update', 'announcements:delete',
-            'documents:view_public', 'documents:view_admin', 'documents:create', 'documents:delete',
-            'assemblies:view', 'assemblies:create', 'assemblies:update', 'assemblies:delete',
-            'settings:view', 'settings:update',
-          ]
-        : [
-            'units:view',
-            'financial:view_own',
-            'maintenance:view_own', 'maintenance:create',
-            'announcements:view',
-            'documents:view_public',
-            'assemblies:view',
-          ]
-    );
-    setStatus('READY');
-  };
 
   /**
    * Login unificado no sistema (Apartamento ou E-mail)
@@ -550,11 +494,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (isSupabaseConfigured && supabase) {
         await authService.signOut();
       }
-      localStorage.removeItem(STORAGE_KEY_USER_ID);
       setUser(null);
       setCondominium(null);
       setPermissions([]);
       setLegacyUser(null);
+      setLegacyCondominio(defaultEmptyCondominio);
       setStatus('UNAUTHENTICATED');
     } catch (err) {
       console.error('Erro ao deslogar:', err);
@@ -661,14 +605,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   /**
-   * Troca de usuário para demonstração local
+   * Troca de usuário mantida para compatibilidade
    */
-  const switchProfile = (profileId: string) => {
-    const target = mockUsuarios.find((u) => u.id === profileId);
-    if (target) {
-      setupMockUser(target);
-      localStorage.setItem(STORAGE_KEY_USER_ID, target.id);
-    }
+  const switchProfile = (_profileId: string) => {
+    // Modo estrito Supabase: alternância de perfis ocorre exclusivamente via autenticação real
   };
 
   /**
@@ -714,7 +654,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         refreshSession,
         completeOnboarding,
         switchProfile,
-        availableDemoUsers: mockUsuarios,
+        availableDemoUsers: [],
         legacyUser,
         legacyCondominio,
         condominio: legacyCondominio,
