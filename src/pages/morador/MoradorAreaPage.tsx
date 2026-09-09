@@ -118,7 +118,7 @@ export const MoradorAreaPage: React.FC<MoradorAreaPageProps> = ({ initialSubTab 
         unit_id: userUnit?.id || null,
         title: solicitacaoTitulo.trim(),
         description: solicitacaoDescricao.trim() || 'Sem descrição adicional',
-        location: userUnit ? `Unidade ${userUnit.unit_number}` : 'Unidade Privativa',
+        location: userUnit ? `Apartamento ${userUnit.unit_number}` : 'Apartamento Privativo',
         priority: solicitacaoPrioridade,
         status: 'open',
       });
@@ -155,7 +155,7 @@ export const MoradorAreaPage: React.FC<MoradorAreaPageProps> = ({ initialSubTab 
           }`}
         >
           <Home className="w-4 h-4" />
-          Minha Unidade
+          Meu Apartamento
         </button>
 
         <button
@@ -234,20 +234,20 @@ export const MoradorAreaPage: React.FC<MoradorAreaPageProps> = ({ initialSubTab 
         </div>
       )}
 
-      {/* Subtab Content: Minha Unidade */}
+      {/* Subtab Content: Meu Apartamento */}
       {!isLoading && subTab === 'unidade' && (
         <div className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Ficha Cadastral da Unidade</CardTitle>
+              <CardTitle className="text-sm">Ficha Cadastral do Apartamento</CardTitle>
               <CardDescription>Dados cadastrados na administração do condomínio (Fonte: Supabase)</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 text-xs">
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-4 bg-slate-50 rounded-xl">
                 <div>
-                  <p className="text-slate-400 text-[11px]">Unidade / Bloco</p>
+                  <p className="text-slate-400 text-[11px]">Apartamento / Bloco</p>
                   <p className="font-bold text-slate-800 text-base">
-                    Unidade {displayUnitNumero} ({displayBloco})
+                    Apartamento {displayUnitNumero} ({displayBloco})
                   </p>
                 </div>
                 <div>
@@ -285,14 +285,14 @@ export const MoradorAreaPage: React.FC<MoradorAreaPageProps> = ({ initialSubTab 
           <Card>
             <CardHeader>
               <CardTitle className="text-sm">Minhas Cotas Condominiais</CardTitle>
-              <CardDescription>Extrato e lançamentos registrados para sua unidade</CardDescription>
+              <CardDescription>Extrato e lançamentos registrados para seu apartamento</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               {meusLancamentos.length === 0 ? (
                 <EmptyState
                   icon={<DollarSign className="w-6 h-6" />}
                   title="Nenhum lançamento financeiro"
-                  description="Não há boletos ou cobranças registradas para esta unidade no momento."
+                  description="Não há boletos ou cobranças registradas para este apartamento no momento."
                 />
               ) : (
                 meusLancamentos.map((item) => (

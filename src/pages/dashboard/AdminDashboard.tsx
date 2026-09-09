@@ -184,7 +184,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
             iconColor="text-amber-600"
             subtitle={`Total pendente: ${formatCurrency(summary.totalInadimplente)}`}
             trend={{
-              value: `${summary.unidadesInadimplentesCount} un. em atraso`,
+              value: `${summary.unidadesInadimplentesCount} aptos em atraso`,
               isPositive: summary.unidadesInadimplentesCount === 0,
             }}
             onClick={() => onNavigate('financeiro')}

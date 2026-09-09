@@ -159,7 +159,7 @@ export const OnboardingPage: React.FC<OnboardingPageProps> = ({ onCancel, onComp
                   <Input
                     id="onboarding-condo-units"
                     type="number"
-                    label="Total Estimado de Unidades"
+                    label="Total Estimado de Apartamentos"
                     placeholder="Ex: 32"
                     min={1}
                     value={totalUnits}

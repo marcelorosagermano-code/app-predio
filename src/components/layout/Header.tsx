@@ -22,7 +22,7 @@ interface HeaderProps {
 
 const tabTitles: Record<string, { title: string; category: string }> = {
   dashboard: { title: 'Visão Geral & Indicadores', category: 'Administração' },
-  unidades: { title: 'Gestão de Unidades', category: 'Cadastros' },
+  unidades: { title: 'Gestão de Apartamentos', category: 'Cadastros' },
   financeiro: { title: 'Controle Financeiro & Lançamentos', category: 'Finanças' },
   manutencao: { title: 'Ordens de Serviço & Manutenção', category: 'Operacional' },
   comunicados: { title: 'Mural de Comunicados', category: 'Comunicação' },
@@ -30,7 +30,7 @@ const tabTitles: Record<string, { title: string; category: string }> = {
   assembleias: { title: 'Assembleias & Atas', category: 'Governança' },
   configuracoes: { title: 'Configurações do Condomínio', category: 'Sistema' },
   'morador-dashboard': { title: 'Minha Área', category: 'Espaço do Morador' },
-  'morador-unidade': { title: 'Dados da Minha Unidade', category: 'Espaço do Morador' },
+  'morador-unidade': { title: 'Dados do Meu Apartamento', category: 'Espaço do Morador' },
   'morador-financeiro': { title: 'Minhas Cotas & Boletos', category: 'Espaço do Morador' },
   'morador-comunicados': { title: 'Avisos & Comunicados', category: 'Espaço do Morador' },
   'morador-manutencao': { title: 'Minhas Solicitações', category: 'Espaço do Morador' },
@@ -129,7 +129,7 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu, currentTab }
                   : role === 'conselho'
                   ? 'Conselho Fiscal'
                   : user?.unitNumber
-                  ? `Unidade ${user.unitNumber}`
+                  ? `Apartamento ${user.unitNumber}`
                   : 'Morador'}
               </p>
             </div>
@@ -168,7 +168,7 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu, currentTab }
                   </div>
                   {user?.unitNumber && (
                     <p className="text-[11px] text-slate-500 pl-5">
-                      Unidade Cadastrada: <span className="font-medium text-slate-700">{user.unitNumber}</span>
+                      Apartamento Cadastrado: <span className="font-medium text-slate-700">{user.unitNumber}</span>
                     </p>
                   )}
                   {condominium?.city && (

@@ -78,7 +78,7 @@ export function useMoradorDashboard() {
       setData(result);
     } catch (err: any) {
       console.error('Erro ao carregar dados do painel do morador:', err);
-      setError(err?.message || 'Falha ao sincronizar dados da sua unidade.');
+      setError(err?.message || 'Falha ao sincronizar dados do seu apartamento.');
     } finally {
       setIsLoading(false);
     }

@@ -52,7 +52,7 @@ export const MoradorDashboard: React.FC<MoradorDashboardProps> = ({ onNavigate }
       <div className="p-6">
         <EmptyState
           icon={<AlertCircle className="w-8 h-8 text-rose-500" />}
-          title="Falha ao sincronizar dados da sua unidade"
+          title="Falha ao sincronizar dados do seu apartamento"
           description={error}
           actionLabel="Tentar Novamente"
           onAction={refresh}
@@ -77,15 +77,15 @@ export const MoradorDashboard: React.FC<MoradorDashboardProps> = ({ onNavigate }
 
   return (
     <div className="space-y-6">
-      {/* 1. MINHA UNIDADE - Header Resumo */}
-      <section aria-labelledby="unidade-heading">
+      {/* 1. MEU APARTAMENTO - Header Resumo */}
+      <section aria-labelledby="apartamento-heading">
         <Card className="bg-gradient-to-r from-indigo-900 to-slate-900 text-white border-0 shadow-md">
           <CardContent className="p-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="space-y-1.5">
                 <div className="flex items-center gap-2">
                   <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-500/30 border border-indigo-400/40 text-indigo-200">
-                    Sua Unidade Cadastrada
+                    Seu Apartamento Cadastrado
                   </span>
                   {unit ? (
                     <Badge
@@ -108,10 +108,10 @@ export const MoradorDashboard: React.FC<MoradorDashboardProps> = ({ onNavigate }
                     <Badge variant="neutral" size="sm">Cadastro em Análise</Badge>
                   )}
                 </div>
-                <h2 id="unidade-heading" className="text-2xl font-extrabold tracking-tight">
+                <h2 id="apartamento-heading" className="text-2xl font-extrabold tracking-tight">
                   {unit
-                    ? `Unidade ${unit.unitNumber}${unit.block ? ` — ${unit.block}` : ''}`
-                    : 'Unidade não vinculada'}
+                    ? `Apartamento ${unit.unitNumber}${unit.block ? ` — ${unit.block}` : ''}`
+                    : 'Apartamento não vinculado'}
                 </h2>
                 <p className="text-xs text-slate-300">
                   {unit?.ownerName ? (
@@ -121,7 +121,7 @@ export const MoradorDashboard: React.FC<MoradorDashboardProps> = ({ onNavigate }
                       {unit.sqm && ` • Área: ${unit.sqm} m²`}
                     </>
                   ) : (
-                    'Consulte a administração do condomínio para vincular sua unidade.'
+                    'Consulte a administração do condomínio para vincular seu apartamento.'
                   )}
                 </p>
               </div>
@@ -142,7 +142,7 @@ export const MoradorDashboard: React.FC<MoradorDashboardProps> = ({ onNavigate }
                   onClick={() => onNavigate('morador-unidade')}
                   className="bg-white/10 hover:bg-white/20 text-white border-white/20"
                 >
-                  Ver Ficha da Unidade
+                  Ver Ficha do Apartamento
                 </Button>
               </div>
             </div>
@@ -150,12 +150,12 @@ export const MoradorDashboard: React.FC<MoradorDashboardProps> = ({ onNavigate }
         </Card>
       </section>
 
-      {/* 2. SITUAÇÃO FINANCEIRA DA UNIDADE */}
+      {/* 2. SITUAÇÃO FINANCEIRA DO APARTAMENTO */}
       <section className="space-y-3" aria-labelledby="financeiro-morador-heading">
         <div className="flex items-center justify-between">
           <h3 id="financeiro-morador-heading" className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-2">
             <DollarSign className="w-4 h-4 text-indigo-600" />
-            Situação Financeira da sua Unidade
+            Situação Financeira do seu Apartamento
           </h3>
           <Button
             size="sm"
@@ -236,14 +236,14 @@ export const MoradorDashboard: React.FC<MoradorDashboardProps> = ({ onNavigate }
                   <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto" />
                   <p className="text-sm font-bold text-slate-800">Tudo em dia!</p>
                   <p className="text-xs text-slate-500">
-                    Nenhuma cota condominial em aberto ou pendente para sua unidade.
+                    Nenhuma cota condominial em aberto ou pendente para seu apartamento.
                   </p>
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* Histórico Recente de Pagamentos da Unidade */}
+          {/* Histórico Recente de Pagamentos do Apartamento */}
           <Card>
             <CardHeader className="border-b border-slate-100">
               <CardTitle className="text-xs font-semibold text-slate-700 uppercase">

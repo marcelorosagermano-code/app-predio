@@ -71,12 +71,12 @@ export const FirstAccessPage: React.FC = () => {
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md px-4 sm:px-0">
         <div className="bg-white py-8 px-6 shadow-sm border border-slate-200 rounded-2xl sm:px-10">
-          {/* Card informativo sobre a unidade */}
+          {/* Card informativo sobre o apartamento */}
           <div className="mb-6 p-4 bg-indigo-50/70 border border-indigo-100 rounded-xl flex items-start gap-3">
             <Home className="w-5 h-5 text-indigo-600 mt-0.5 shrink-0" />
             <div className="text-sm">
               <span className="font-semibold text-indigo-950 block">
-                {user?.unitNumber ? `Unidade: ${user.unitNumber}` : 'Unidade Residencial'}
+                {user?.unitNumber ? `Apartamento: ${user.unitNumber}` : 'Apartamento Residencial'}
               </span>
               <p className="text-indigo-800/80 text-xs mt-0.5">
                 Acesso associado ao morador {user?.fullName || 'cadastrado'}.

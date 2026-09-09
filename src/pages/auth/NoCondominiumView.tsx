@@ -70,7 +70,7 @@ export const NoCondominiumView: React.FC<NoCondominiumViewProps> = ({ onStartOnb
                 <div>
                   <h4 className="text-xs font-bold text-slate-900">Sou Morador ou Proprietário</h4>
                   <p className="text-[11px] text-slate-600 mt-0.5">
-                    Solicite ao seu síndico o cadastro ou convite para sua unidade.
+                    Solicite ao seu síndico o cadastro ou convite para seu apartamento.
                   </p>
                 </div>
               </div>

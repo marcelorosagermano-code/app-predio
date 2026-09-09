@@ -50,7 +50,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     {
       id: 'unidades',
-      label: 'Unidades',
+      label: 'Apartamentos',
       icon: Building,
       permission: 'units:view',
     },
@@ -101,7 +101,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     {
       id: 'morador-unidade',
-      label: 'Minha Unidade',
+      label: 'Meu Apartamento',
       icon: Building,
     },
     {
@@ -151,7 +151,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         return 'Conselho Fiscal';
       case 'morador':
       default:
-        return user?.unitNumber ? `Unidade ${user.unitNumber}` : 'Morador';
+        return user?.unitNumber ? `Apartamento ${user.unitNumber}` : 'Morador';
     }
   };
 
