@@ -186,8 +186,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       setPermissions(rolePerms);
 
-      // Se for morador com primeiro acesso pendente
-      if (profile.role === 'morador' && profile.mustChangePassword) {
+      // Se o usuário tem primeiro acesso pendente (independente da role)
+      if (profile.mustChangePassword) {
         setStatus('FIRST_ACCESS');
         return;
       }

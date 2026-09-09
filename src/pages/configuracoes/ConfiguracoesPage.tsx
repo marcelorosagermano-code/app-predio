@@ -108,6 +108,7 @@ export const ConfiguracoesPage: React.FC = () => {
   const [editingUser, setEditingUser] = useState<CondominiumUserItem | null>(null);
   const [isTransferModalOpen, setIsTransferModalOpen] = useState<boolean>(false);
   const [transferTargetId, setTransferTargetId] = useState<string>('');
+  const [transferSourceSindicoId, setTransferSourceSindicoId] = useState<string>('');
   const [isSubmittingTransfer, setIsSubmittingTransfer] = useState<boolean>(false);
   const [transferError, setTransferError] = useState<string>('');
   const [editUnitNumber, setEditUnitNumber] = useState<string>('');
@@ -170,6 +171,14 @@ export const ConfiguracoesPage: React.FC = () => {
   }, [activeTab]);
 
 
+  const handleOpenTransferModal = (sindicoUser: CondominiumUserItem) => {
+    setTransferSourceSindicoId(sindicoUser.id);
+    setTransferTargetId('');
+    setTransferError('');
+    setIsTransferModalOpen(false);
+    setTimeout(() => setIsTransferModalOpen(true), 10);
+  };
+
   const handleTransferSindicancia = async () => {
     if (!transferTargetId) {
       setTransferError('Selecione um usuário para transferir a sindicância.');
@@ -180,7 +189,7 @@ export const ConfiguracoesPage: React.FC = () => {
     setTransferError('');
 
     try {
-      const res = await authService.transferSindicancia(transferTargetId);
+      const res = await authService.transferSindicancia(transferTargetId, transferSourceSindicoId);
       if (res.success) {
         setIsTransferModalOpen(false);
         // Force full refresh to reflect role changes and potential redirect
@@ -322,6 +331,11 @@ export const ConfiguracoesPage: React.FC = () => {
   };
 
   const handleOpenDeleteModal = (user: CondominiumUserItem) => {
+    if (user.role === 'sindico') {
+      alert("Este usuário é o síndico atual. Para excluí-lo, primeiro transfira a sindicância para outro usuário.");
+      handleOpenTransferModal(user);
+      return;
+    }
     setDeletingUser(user);
     setDeleteUserError('');
     setIsDeleteUserModalOpen(true);
@@ -593,14 +607,14 @@ export const ConfiguracoesPage: React.FC = () => {
                             )}
                           </td>
                           <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                            {u.role === 'morador' ? (
+                            {u.role === 'morador' || u.role === 'conselho' ? (
                               <div className="flex items-center justify-end gap-1.5">
                                 <button
                                   id={`btn-edit-user-${u.id}`}
                                   type="button"
                                   onClick={() => handleOpenEditModal(u)}
                                   className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 hover:text-indigo-600 transition-colors shadow-2xs cursor-pointer"
-                                  title="Editar morador"
+                                  title="Editar usuário"
                                 >
                                   <Pencil className="w-3.5 h-3.5" />
                                   <span>Editar</span>
@@ -610,11 +624,36 @@ export const ConfiguracoesPage: React.FC = () => {
                                   type="button"
                                   onClick={() => handleOpenDeleteModal(u)}
                                   className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-rose-600 bg-white border border-rose-200 rounded-md hover:bg-rose-50 hover:text-rose-700 transition-colors shadow-2xs cursor-pointer"
-                                  title="Excluir acesso do morador"
+                                  title="Excluir acesso"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                   <span>Excluir</span>
                                 </button>
+                              </div>
+                            ) : u.role === 'sindico' && (user?.role === 'admin' || (user?.role === 'sindico' && u.id === user.id)) ? (
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  id={`btn-transfer-sindico-${u.id}`}
+                                  type="button"
+                                  onClick={() => handleOpenTransferModal(u)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-indigo-700 bg-white border border-indigo-200 rounded-md hover:bg-indigo-50 hover:text-indigo-800 transition-colors shadow-2xs cursor-pointer"
+                                  title="Transferir Sindicância"
+                                >
+                                  <RefreshCw className="w-3.5 h-3.5" />
+                                  <span>Transferir</span>
+                                </button>
+                                {user?.role === 'admin' && (
+                                  <button
+                                    id={`btn-delete-sindico-${u.id}`}
+                                    type="button"
+                                    onClick={() => handleOpenDeleteModal(u)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-rose-600 bg-white border border-rose-200 rounded-md hover:bg-rose-50 hover:text-rose-700 transition-colors shadow-2xs cursor-pointer"
+                                    title="Excluir síndico"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                    <span>Excluir</span>
+                                  </button>
+                                )}
                               </div>
                             ) : (
                               <span className="text-slate-400">—</span>
@@ -706,14 +745,14 @@ export const ConfiguracoesPage: React.FC = () => {
                       </div>
 
                       {/* Botões de Ações no Mobile */}
-                      {u.role === 'morador' && (
+                      {(u.role === 'morador' || u.role === 'conselho') && (
                         <div className="pt-2 border-t border-slate-100/80 flex items-center gap-2">
                           <button
                             id={`btn-mobile-edit-user-${u.id}`}
                             type="button"
                             onClick={() => handleOpenEditModal(u)}
                             className="flex-1 min-h-[38px] px-3 text-xs font-semibold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 hover:text-indigo-600 active:bg-slate-100 transition-colors flex items-center justify-center gap-1.5 shadow-2xs"
-                            title="Editar dados do morador"
+                            title="Editar dados"
                           >
                             <Pencil className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                             <span>Editar</span>
@@ -723,11 +762,38 @@ export const ConfiguracoesPage: React.FC = () => {
                             type="button"
                             onClick={() => handleOpenDeleteModal(u)}
                             className="flex-1 min-h-[38px] px-3 text-xs font-semibold text-rose-600 bg-white border border-rose-200 rounded-lg hover:bg-rose-50 hover:text-rose-700 active:bg-rose-100 transition-colors flex items-center justify-center gap-1.5 shadow-2xs"
-                            title="Excluir morador"
+                            title="Excluir acesso"
                           >
                             <Trash2 className="w-3.5 h-3.5 text-rose-500 shrink-0" />
                             <span>Excluir</span>
                           </button>
+                        </div>
+                      )}
+                      
+                      {u.role === 'sindico' && (user?.role === 'admin' || (user?.role === 'sindico' && u.id === user.id)) && (
+                        <div className="pt-2 border-t border-slate-100/80 flex items-center gap-2">
+                          <button
+                            id={`btn-mobile-transfer-sindico-${u.id}`}
+                            type="button"
+                            onClick={() => handleOpenTransferModal(u)}
+                            className="flex-1 min-h-[38px] px-3 text-xs font-semibold text-indigo-700 bg-white border border-indigo-200 rounded-lg hover:bg-indigo-50 hover:text-indigo-800 active:bg-indigo-100 transition-colors flex items-center justify-center gap-1.5 shadow-2xs"
+                            title="Transferir Sindicância"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5 shrink-0" />
+                            <span>Transferir</span>
+                          </button>
+                          {user?.role === 'admin' && (
+                            <button
+                              id={`btn-mobile-delete-sindico-${u.id}`}
+                              type="button"
+                              onClick={() => handleOpenDeleteModal(u)}
+                              className="flex-1 min-h-[38px] px-3 text-xs font-semibold text-rose-600 bg-white border border-rose-200 rounded-lg hover:bg-rose-50 hover:text-rose-700 active:bg-rose-100 transition-colors flex items-center justify-center gap-1.5 shadow-2xs"
+                              title="Excluir acesso"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                              <span>Excluir</span>
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1004,7 +1070,7 @@ export const ConfiguracoesPage: React.FC = () => {
           if (!isSubmittingTransfer) setIsTransferModalOpen(false);
         }}
         title="Transferir Sindicância"
-        description="Atenção: Esta ação transferirá permanentemente o seu cargo de síndico para outro usuário do condomínio."
+        description="Atenção: Esta ação transferirá permanentemente o cargo de síndico para outro usuário."
         maxWidth="md"
         footer={
           <div className="flex flex-col-reverse sm:flex-row items-center justify-end gap-2 sm:gap-3 w-full">
@@ -1045,9 +1111,8 @@ export const ConfiguracoesPage: React.FC = () => {
             <h4 className="text-sm font-semibold text-amber-900 mb-2">Você está prestes a transferir a sindicância.</h4>
             <ul className="text-xs text-amber-800 list-disc pl-4 space-y-1">
               <li>O usuário selecionado passará a ser o novo síndico.</li>
-              <li>Você deixará de ser síndico imediatamente.</li>
-              <li>Seu acesso administrativo será encerrado.</li>
-              <li>Você passará automaticamente a acessar o sistema como morador.</li>
+              <li>O atual síndico deixará de ser síndico imediatamente.</li>
+              <li>O antigo síndico passará automaticamente a acessar o sistema como morador.</li>
             </ul>
             <p className="text-xs text-amber-900 font-bold mt-2">Essa ação não pode ser desfeita automaticamente.</p>
           </div>
@@ -1063,10 +1128,10 @@ export const ConfiguracoesPage: React.FC = () => {
             >
               <option value="">Selecione um usuário...</option>
               {usersList
-                .filter(u => u.id !== user?.id && u.role !== 'admin' && u.role !== 'sindico')
+                .filter(u => u.id !== transferSourceSindicoId && u.role !== 'admin' && u.role !== 'sindico')
                 .map(u => (
                   <option key={u.id} value={u.id}>
-                    {u.nome} (Ap {u.unidadeNumero})
+                    {u.nome} (Ap {u.unidadeNumero || 'Geral'})
                   </option>
               ))}
             </select>

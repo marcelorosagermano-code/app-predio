@@ -1181,7 +1181,7 @@ export const authService = {
    * Transfere a sindicância do usuário atual para outro usuário elegível no mesmo condomínio.
    * Utiliza o endpoint server-side para segurança e atomicidade.
    */
-  async transferSindicancia(targetProfileId: string): Promise<{ success: boolean; message: string }> {
+  async transferSindicancia(targetProfileId: string, currentSindicoId?: string): Promise<{ success: boolean; message: string }> {
     const session = await this.getValidSession();
     if (!session?.access_token) {
       throw new Error('Sessão expirada ou não autenticada. Por favor, faça login novamente para continuar.');
@@ -1195,14 +1195,13 @@ export const authService = {
         },
         body: JSON.stringify({
           targetProfileId,
+          currentSindicoId,
         }),
       });
 
       const parsed = await parseApiResponse(resp);
 
       if (parsed.ok) {
-        // Atualiza a sessão silenciosamente para refletir a mudança de role localmente
-        await this.refreshSession();
         return { success: true, message: (parsed.data as any)?.message || 'Transferência concluída com sucesso.' };
       }
 

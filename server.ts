@@ -667,13 +667,15 @@ export function registerApiRoutes(app: express.Express) {
 
       // Se o usuário ainda não existir no Supabase Auth e a senha informada for '000000'
       if (signInRes.error && password === '000000') {
+        const assignedRole = (residentProfile?.role as any) || 'morador';
+
         const { data: newAuthUser } = await supabaseAdmin.auth.admin.createUser({
           email: residentEmail,
           password: '000000',
           email_confirm: true,
           user_metadata: {
             full_name: residentFullName,
-            role: 'morador',
+            role: assignedRole,
             must_change_password: true,
             first_access_completed: false,
             unit_id: unit.id,
@@ -683,12 +685,14 @@ export function registerApiRoutes(app: express.Express) {
         });
 
         if (newAuthUser?.user) {
+          const assignedRole = (residentProfile?.role as any) || 'morador';
+
           const { data: upsertedProf } = await supabaseAdmin.from('profiles').upsert({
             id: newAuthUser.user.id,
             condominium_id: unit.condominium_id,
             full_name: residentFullName,
             email: residentEmail,
-            role: 'morador',
+            role: assignedRole,
             is_active: true,
             updated_at: new Date().toISOString(),
           }).select().single();
@@ -756,6 +760,7 @@ export function registerApiRoutes(app: express.Express) {
       // Garantir que a tabela public.profiles tenha o condominium_id real sincronizado
       try {
         if (!residentProfile || !residentProfile.condominium_id || residentProfile.condominium_id !== unit.condominium_id) {
+          const assignedRole = (residentProfile?.role as any) || 'morador';
           await supabaseAdmin
             .from('profiles')
             .upsert({
@@ -763,7 +768,7 @@ export function registerApiRoutes(app: express.Express) {
               condominium_id: unit.condominium_id,
               full_name: residentProfile?.full_name || user.user_metadata?.full_name || residentFullName,
               email: residentProfile?.email || user.email || residentEmail,
-              role: 'morador',
+              role: assignedRole,
               is_active: true,
               updated_at: new Date().toISOString(),
             });
@@ -1017,30 +1022,53 @@ export function registerApiRoutes(app: express.Express) {
         return res.status(403).json({ success: false, error: 'Perfil não encontrado.' });
       }
 
-      // 3 & 4. Confirmar que o solicitante pertence ao condomínio e é síndico
       const condominiumId = callerProfile.condominium_id;
       if (!condominiumId) {
         return res.status(403).json({ success: false, error: 'Usuário sem condomínio vinculado.' });
       }
 
-      if (callerProfile.role !== 'sindico') {
-        return res.status(403).json({ success: false, error: 'Apenas síndicos podem transferir a sindicância.' });
+      if (callerProfile.role !== 'sindico' && callerProfile.role !== 'admin') {
+        return res.status(403).json({ success: false, error: 'Apenas síndicos ou administradores podem transferir a sindicância.' });
       }
 
-      // 5. Validar o destino
       const body = req.body || {};
-      const { targetProfileId } = body;
+      const { targetProfileId, currentSindicoId } = body;
 
       if (!targetProfileId || typeof targetProfileId !== 'string') {
         return res.status(400).json({ success: false, error: 'Destino não fornecido.' });
       }
 
-      // 8. Validar que o destino não é o próprio solicitante
-      if (targetProfileId === callerProfile.id) {
-        return res.status(400).json({ success: false, error: 'Não é possível transferir a sindicância para si mesmo.' });
+      // Determinar o ID do síndico atual com base em quem está chamando
+      let actualCurrentSindicoId = currentSindicoId;
+      if (callerProfile.role === 'sindico') {
+        actualCurrentSindicoId = callerProfile.id;
+      } else if (!actualCurrentSindicoId) {
+        return res.status(400).json({ success: false, error: 'O ID do síndico atual é obrigatório para administradores.' });
       }
 
-      // 6 & 7. Validar que o destino pertence ao mesmo condomínio e não é admin
+      // Validar que o destino não é o próprio síndico
+      if (targetProfileId === actualCurrentSindicoId) {
+        return res.status(400).json({ success: false, error: 'Não é possível transferir a sindicância para o próprio síndico.' });
+      }
+
+      // Buscar perfil do síndico atual
+      const { data: currentSindicoProfile } = await supabaseAdmin
+        .from('profiles')
+        .select('*')
+        .eq('id', actualCurrentSindicoId)
+        .maybeSingle();
+
+      if (!currentSindicoProfile || currentSindicoProfile.role !== 'sindico') {
+        return res.status(404).json({ success: false, error: 'O usuário atual especificado não é um síndico válido.' });
+      }
+
+      if (currentSindicoProfile.condominium_id !== condominiumId && callerProfile.role !== 'admin') {
+         return res.status(403).json({ success: false, error: 'Sem permissão para alterar síndico de outro condomínio.' });
+      }
+
+      const targetCondominiumId = callerProfile.role === 'admin' ? currentSindicoProfile.condominium_id : condominiumId;
+
+      // Buscar perfil do destino
       const { data: targetProfile } = await supabaseAdmin
         .from('profiles')
         .select('*')
@@ -1051,73 +1079,78 @@ export function registerApiRoutes(app: express.Express) {
         return res.status(404).json({ success: false, error: 'Usuário destino não encontrado.' });
       }
 
-      if (targetProfile.condominium_id !== condominiumId) {
+      if (targetProfile.condominium_id !== targetCondominiumId) {
         return res.status(403).json({ success: false, error: 'O usuário destino deve pertencer ao mesmo condomínio.' });
       }
 
       if (targetProfile.role === 'admin') {
         return res.status(403).json({ success: false, error: 'Não é possível transferir a sindicância para um administrador.' });
       }
-      
+
       if (targetProfile.role === 'sindico') {
         return res.status(400).json({ success: false, error: 'O usuário destino já é um síndico.' });
       }
 
-      // 9. Verificar se já existe algum outro síndico ativo, para evitar inconsistências (safety check)
+      // Segurança adicional: Verificar se não estamos criando um segundo síndico acidentalmente
       const { data: existingSindicos } = await supabaseAdmin
         .from('profiles')
         .select('id')
-        .eq('condominium_id', condominiumId)
+        .eq('condominium_id', targetCondominiumId)
         .eq('role', 'sindico')
-        .neq('id', callerProfile.id);
-        
+        .neq('id', actualCurrentSindicoId);
+
       if (existingSindicos && existingSindicos.length > 0) {
-        console.warn('Alerta: Encontrados outros síndicos no condomínio.', existingSindicos);
+        return res.status(400).json({ success: false, error: 'Inconsistência detectada: Múltiplos síndicos encontrados. Contate o suporte.' });
       }
 
-      // 10 & 11. Alterar os roles (Simulando atomicidade com fallback)
+      // Simular Transação (Atomicidade Node.js)
       const originalTargetRole = targetProfile.role;
-      
-      // Step 1: Promote target
+
+      // Passo 1: Promover o destino
       const { error: targetErr } = await supabaseAdmin
         .from('profiles')
         .update({ role: 'sindico' })
         .eq('id', targetProfileId);
-        
+
       if (targetErr) {
         return res.status(500).json({ success: false, error: 'Falha ao promover o novo síndico.' });
       }
-      
-      // Step 2: Demote caller
-      const { error: callerErr } = await supabaseAdmin
+
+      // Passo 2: Rebaixar o síndico atual
+      const { error: currentErr } = await supabaseAdmin
         .from('profiles')
         .update({ role: 'morador' })
-        .eq('id', callerProfile.id);
-        
-      if (callerErr) {
-        // Fallback: Revert target promotion
+        .eq('id', actualCurrentSindicoId);
+
+      if (currentErr) {
+        // ROLLBACK Passo 1
         await supabaseAdmin.from('profiles').update({ role: originalTargetRole }).eq('id', targetProfileId);
         return res.status(500).json({ success: false, error: 'Falha ao rebaixar o síndico atual. Operação revertida.' });
       }
 
-      // Update Auth User Metadata for both to reflect roles (optional but recommended for session consistency)
+      // Passo 3: Atualizar metadados de autenticação
       await supabaseAdmin.auth.admin.updateUserById(targetProfileId, {
         user_metadata: { role: 'sindico' }
       }).catch(console.warn);
-      
-      await supabaseAdmin.auth.admin.updateUserById(callerProfile.id, {
+
+      await supabaseAdmin.auth.admin.updateUserById(actualCurrentSindicoId, {
         user_metadata: { role: 'morador' }
       }).catch(console.warn);
 
-      // 12. Registrar no activity_logs
+      // Passo 4: Registrar auditoria (Activity Logs)
       try {
         await supabaseAdmin.from('activity_logs').insert({
-          condominium_id: condominiumId,
+          condominium_id: targetCondominiumId,
           user_id: callerProfile.id,
-          action: 'Transferência de Sindicância',
-          details: `Sindicância transferida de ${callerProfile.full_name || callerProfile.name || callerProfile.id} para ${targetProfile.full_name || targetProfile.name || targetProfile.id}.`,
-          type: 'system',
-          created_at: new Date().toISOString()
+          action: 'TRANSFERENCIA_SINDICANCIA',
+          entity_type: 'profile',
+          entity_id: targetProfileId,
+          description: `Sindicância transferida de ${currentSindicoProfile.full_name} para ${targetProfile.full_name}.`,
+          metadata: {
+            old_sindico_id: actualCurrentSindicoId,
+            new_sindico_id: targetProfileId,
+            executed_by: callerProfile.role
+          },
         });
       } catch (logErr) {
         console.warn('Falha ao registrar log de transferência:', logErr);
@@ -1274,7 +1307,7 @@ export function registerApiRoutes(app: express.Express) {
           password: '000000',
           user_metadata: {
             full_name: cleanResponsibleName,
-            role: 'morador',
+            role: requestedRole,
             must_change_password: true,
             first_access_completed: false,
             unit_id: unit.id,
@@ -1292,7 +1325,7 @@ export function registerApiRoutes(app: express.Express) {
             email_confirm: true,
             user_metadata: {
               full_name: cleanResponsibleName,
-              role: 'morador',
+              role: requestedRole,
               must_change_password: true,
               first_access_completed: false,
               unit_id: unit.id,
@@ -1320,7 +1353,7 @@ export function registerApiRoutes(app: express.Express) {
               options: {
                 data: {
                   full_name: cleanResponsibleName,
-                  role: 'morador',
+                  role: requestedRole,
                   must_change_password: true,
                   first_access_completed: false,
                   unit_id: unit.id,
@@ -1364,7 +1397,7 @@ export function registerApiRoutes(app: express.Express) {
           condominium_id: condominiumId,
           full_name: cleanResponsibleName,
           email: residentEmail,
-          role: 'morador',
+          role: requestedRole,
           is_active: true,
           updated_at: new Date().toISOString(),
         })
@@ -1440,7 +1473,7 @@ export function registerApiRoutes(app: express.Express) {
         .eq('id', authUserId)
         .maybeSingle();
 
-      if (verifyErr || !verifiedProfile || verifiedProfile.condominium_id !== condominiumId || verifiedProfile.role !== 'morador') {
+      if (verifyErr || !verifiedProfile || verifiedProfile.condominium_id !== condominiumId || verifiedProfile.role !== requestedRole) {
         if (isNewlyCreatedAuthUser && authUserId) {
           try {
             await supabaseAdmin.from('unit_residents').delete().eq('profile_id', authUserId);
@@ -1468,7 +1501,7 @@ export function registerApiRoutes(app: express.Express) {
           unit_id: unit.id,
           unit_number: unit.unit_number,
           responsible_name: cleanResponsibleName,
-          role: 'morador',
+          role: requestedRole,
         },
       });
 
@@ -1935,8 +1968,12 @@ export function registerApiRoutes(app: express.Express) {
         return res.status(403).json({ success: false, error: 'Usuários com perfil de administrador não podem ser excluídos por esta interface.' });
       }
 
-      if (userRole === 'sindico' && targetProfile.role === 'sindico') {
-        return res.status(403).json({ success: false, error: 'Um síndico não pode excluir outro síndico. Solicite ao administrador.' });
+      if (targetProfile.role === 'sindico') {
+        return res.status(403).json({ 
+          success: false, 
+          error: 'Este usuário é o síndico atual. Para excluí-lo, primeiro transfira a sindicância para outro usuário.',
+          requiresTransfer: true
+        });
       }
 
       // 4. Buscar informações da unidade antes de desvincular (para log e histórico)
