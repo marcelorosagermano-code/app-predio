@@ -34,7 +34,6 @@ export const MoradorAreaPage: React.FC<MoradorAreaPageProps> = ({ initialSubTab 
   const { user, condominium } = useAuth();
   const condoId = condominium?.id || user?.condominiumId;
 
-  const [subTab, setSubTab] = useState<string>(initialSubTab);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -144,81 +143,6 @@ export const MoradorAreaPage: React.FC<MoradorAreaPageProps> = ({ initialSubTab 
 
   return (
     <div className="space-y-6">
-      {/* Sub-tab navigation for Morador Area */}
-      <div className="flex border-b border-slate-200 gap-4 overflow-x-auto text-xs">
-        <button
-          onClick={() => setSubTab('unidade')}
-          className={`pb-3 font-semibold transition-colors whitespace-nowrap flex items-center gap-1.5 ${
-            subTab === 'unidade'
-              ? 'border-b-2 border-indigo-600 text-indigo-600'
-              : 'text-slate-500 hover:text-slate-900'
-          }`}
-        >
-          <Home className="w-4 h-4" />
-          Meu Apartamento
-        </button>
-
-        <button
-          onClick={() => setSubTab('financeiro')}
-          className={`pb-3 font-semibold transition-colors whitespace-nowrap flex items-center gap-1.5 ${
-            subTab === 'financeiro'
-              ? 'border-b-2 border-indigo-600 text-indigo-600'
-              : 'text-slate-500 hover:text-slate-900'
-          }`}
-        >
-          <DollarSign className="w-4 h-4" />
-          Meu Financeiro & Boletos
-        </button>
-
-        <button
-          onClick={() => setSubTab('manutencoes')}
-          className={`pb-3 font-semibold transition-colors whitespace-nowrap flex items-center gap-1.5 ${
-            subTab === 'manutencoes'
-              ? 'border-b-2 border-indigo-600 text-indigo-600'
-              : 'text-slate-500 hover:text-slate-900'
-          }`}
-        >
-          <Wrench className="w-4 h-4" />
-          Minhas Solicitações
-        </button>
-
-        <button
-          onClick={() => setSubTab('comunicados')}
-          className={`pb-3 font-semibold transition-colors whitespace-nowrap flex items-center gap-1.5 ${
-            subTab === 'comunicados'
-              ? 'border-b-2 border-indigo-600 text-indigo-600'
-              : 'text-slate-500 hover:text-slate-900'
-          }`}
-        >
-          <Megaphone className="w-4 h-4" />
-          Comunicados
-        </button>
-
-        <button
-          onClick={() => setSubTab('documentos')}
-          className={`pb-3 font-semibold transition-colors whitespace-nowrap flex items-center gap-1.5 ${
-            subTab === 'documentos'
-              ? 'border-b-2 border-indigo-600 text-indigo-600'
-              : 'text-slate-500 hover:text-slate-900'
-          }`}
-        >
-          <FileText className="w-4 h-4" />
-          Documentos
-        </button>
-
-        <button
-          onClick={() => setSubTab('assembleias')}
-          className={`pb-3 font-semibold transition-colors whitespace-nowrap flex items-center gap-1.5 ${
-            subTab === 'assembleias'
-              ? 'border-b-2 border-indigo-600 text-indigo-600'
-              : 'text-slate-500 hover:text-slate-900'
-          }`}
-        >
-          <Users className="w-4 h-4" />
-          Assembleias
-        </button>
-      </div>
-
       {error && (
         <Alert type="error" title="Erro de Sincronização">
           {error}
@@ -235,7 +159,7 @@ export const MoradorAreaPage: React.FC<MoradorAreaPageProps> = ({ initialSubTab 
       )}
 
       {/* Subtab Content: Meu Apartamento */}
-      {!isLoading && subTab === 'unidade' && (
+      {!isLoading && initialSubTab === 'unidade' && (
         <div className="space-y-4">
           <Card>
             <CardHeader>
@@ -280,7 +204,7 @@ export const MoradorAreaPage: React.FC<MoradorAreaPageProps> = ({ initialSubTab 
       )}
 
       {/* Subtab Content: Meu Financeiro */}
-      {!isLoading && subTab === 'financeiro' && (
+      {!isLoading && initialSubTab === 'financeiro' && (
         <div className="space-y-4">
           <Card>
             <CardHeader>
@@ -339,7 +263,7 @@ export const MoradorAreaPage: React.FC<MoradorAreaPageProps> = ({ initialSubTab 
       )}
 
       {/* Subtab Content: Manutenções */}
-      {!isLoading && subTab === 'manutencoes' && (
+      {!isLoading && initialSubTab === 'manutencoes' && (
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <h3 className="text-sm font-bold text-slate-900">Minhas Solicitações e Chamados</h3>
@@ -395,7 +319,7 @@ export const MoradorAreaPage: React.FC<MoradorAreaPageProps> = ({ initialSubTab 
       )}
 
       {/* Subtab Content: Comunicados */}
-      {!isLoading && subTab === 'comunicados' && (
+      {!isLoading && initialSubTab === 'comunicados' && (
         <div className="space-y-4">
           {comunicados.length === 0 ? (
             <EmptyState
@@ -418,7 +342,7 @@ export const MoradorAreaPage: React.FC<MoradorAreaPageProps> = ({ initialSubTab 
       )}
 
       {/* Subtab Content: Documentos */}
-      {!isLoading && subTab === 'documentos' && (
+      {!isLoading && initialSubTab === 'documentos' && (
         <div>
           {documentos.length === 0 ? (
             <EmptyState
@@ -455,7 +379,7 @@ export const MoradorAreaPage: React.FC<MoradorAreaPageProps> = ({ initialSubTab 
       )}
 
       {/* Subtab Content: Assembleias */}
-      {!isLoading && subTab === 'assembleias' && (
+      {!isLoading && initialSubTab === 'assembleias' && (
         <div className="space-y-4">
           {assembleias.length === 0 ? (
             <EmptyState

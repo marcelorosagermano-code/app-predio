@@ -367,25 +367,15 @@ export const authService = {
 
     try {
       const { data: { session }, error } = await supabase.auth.getSession();
-      if (error || !session) {
-        const { data: refreshData, error: refreshErr } = await supabase.auth.refreshSession();
-        if (!refreshErr && refreshData?.session) {
-          return refreshData.session;
-        }
+      
+      if (error) {
+        console.warn('Erro ao obter sessão no Supabase:', error);
         return null;
-      }
-
-      const nowSeconds = Math.floor(Date.now() / 1000);
-      if (session.expires_at && session.expires_at - nowSeconds < 120) {
-        const { data: refreshData, error: refreshErr } = await supabase.auth.refreshSession();
-        if (!refreshErr && refreshData?.session) {
-          return refreshData.session;
-        }
       }
 
       return session;
     } catch (err) {
-      console.warn('Aviso na verificação/renovação de sessão:', err);
+      console.warn('Aviso na verificação da sessão:', err);
       return null;
     }
   },
@@ -410,9 +400,9 @@ export const authService = {
 
     if (response.status === 401 && supabase) {
       try {
-        const { data: refreshData, error: refreshErr } = await supabase.auth.refreshSession();
-        if (!refreshErr && refreshData?.session?.access_token) {
-          headers.set('Authorization', `Bearer ${refreshData.session.access_token}`);
+        const newSession = await this.getValidSession();
+        if (newSession?.access_token && newSession.access_token !== token) {
+          headers.set('Authorization', `Bearer ${newSession.access_token}`);
           response = await fetch(url, {
             ...init,
             headers,

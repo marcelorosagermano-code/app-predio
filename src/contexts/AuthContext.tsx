@@ -231,24 +231,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     initSession();
 
-    // Renovação proativa de sessão periódica (a cada 4 minutos) para evitar expiração silenciosa
-    const refreshInterval = setInterval(async () => {
-      if (isSupabaseConfigured && supabase && document.visibilityState === 'visible') {
-        try {
-          await authService.getValidSession();
-        } catch {}
-      }
-    }, 4 * 60 * 1000);
-
-    const onVisibilityChange = async () => {
-      if (document.visibilityState === 'visible' && isSupabaseConfigured && supabase) {
-        try {
-          await authService.getValidSession();
-        } catch {}
-      }
-    };
-    document.addEventListener('visibilitychange', onVisibilityChange);
-
     // Registrar Listener de Mudança de Estado de Autenticação
     if (isSupabaseConfigured && supabase) {
       const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -280,16 +262,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       return () => {
         isMounted = false;
-        clearInterval(refreshInterval);
-        document.removeEventListener('visibilitychange', onVisibilityChange);
         authListener.subscription.unsubscribe();
       };
     }
 
     return () => {
       isMounted = false;
-      clearInterval(refreshInterval);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [loadUserData]);
 
