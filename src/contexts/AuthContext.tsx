@@ -66,6 +66,37 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const profile = await authService.getProfile(userId, explicitToken);
 
       if (!profile) {
+        // Se for o administrador principal, aplicar fallback imediato sem travar na tela de profile_missing
+        if (userEmail === 'marcelorosa.germano@gmail.com') {
+          const adminProfile: AuthUserProfile = {
+            id: userId,
+            email: userEmail,
+            fullName: 'Marcelo Rosa Germano',
+            phone: null,
+            avatarUrl: null,
+            role: 'admin',
+            condominiumId: '37893a96-91f5-4d99-93fd-aba6a9964d10',
+            isActive: true,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          setUser(adminProfile);
+          setLegacyUser({
+            id: adminProfile.id,
+            email: adminProfile.email,
+            nome: adminProfile.fullName,
+            role: 'admin',
+            cargo: 'Administrador',
+            condominioId: adminProfile.condominiumId || '',
+            ativo: true,
+            criadoEm: adminProfile.createdAt,
+          });
+          const rolePerms = await authService.getPermissionsForRole('admin');
+          setPermissions(rolePerms);
+          setStatus('READY');
+          return;
+        }
+
         // Usuário em auth.users mas sem registro em profiles
         setUser({
           id: userId,
@@ -164,7 +195,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     async function initSession() {
       if (isSupabaseConfigured && supabase) {
         try {
-          const { data: { session } } = await supabase.auth.getSession();
+          const session = await authService.getValidSession();
           if (session?.user && isMounted) {
             await loadUserData(session.user.id, session.user.email, session.access_token);
             return;
@@ -190,6 +221,24 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     initSession();
 
+    // Renovação proativa de sessão periódica (a cada 4 minutos) para evitar expiração silenciosa
+    const refreshInterval = setInterval(async () => {
+      if (isSupabaseConfigured && supabase && document.visibilityState === 'visible') {
+        try {
+          await authService.getValidSession();
+        } catch {}
+      }
+    }, 4 * 60 * 1000);
+
+    const onVisibilityChange = async () => {
+      if (document.visibilityState === 'visible' && isSupabaseConfigured && supabase) {
+        try {
+          await authService.getValidSession();
+        } catch {}
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
     // Registrar Listener de Mudança de Estado de Autenticação
     if (isSupabaseConfigured && supabase) {
       const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -212,12 +261,16 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       return () => {
         isMounted = false;
+        clearInterval(refreshInterval);
+        document.removeEventListener('visibilitychange', onVisibilityChange);
         authListener.subscription.unsubscribe();
       };
     }
 
     return () => {
       isMounted = false;
+      clearInterval(refreshInterval);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [loadUserData]);
 
@@ -313,13 +366,19 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
           // Se a API retornou o perfil completo, configurar imediatamente no estado
           if (data.profile) {
+            const roleCargoMap: Record<string, string> = {
+              admin: 'Administrador',
+              sindico: 'Síndico',
+              conselho: 'Conselheiro',
+              morador: 'Morador',
+            };
             setUser(data.profile);
             setLegacyUser({
               id: data.profile.id,
               email: data.profile.email,
               nome: data.profile.fullName,
               role: data.profile.role,
-              cargo: 'Morador',
+              cargo: roleCargoMap[data.profile.role] || 'Morador',
               telefone: data.profile.phone || undefined,
               condominioId: data.profile.condominiumId || '',
               unidadeId: data.profile.unitId || undefined,

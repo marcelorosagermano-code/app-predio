@@ -1,4 +1,5 @@
 import { supabase } from './client';
+import { authService } from './authService';
 import { OnboardingPayload, AuthCondominium, AuthUserProfile } from '../../types/auth';
 
 export interface OnboardingResult {
@@ -20,7 +21,7 @@ export const onboardingService = {
       return { success: false, error: 'Cliente Supabase não está configurado.' };
     }
 
-    const { data: { session } } = await supabase.auth.getSession();
+    const session = await authService.getValidSession();
     if (!session?.user) {
       return { success: false, error: 'Usuário não autenticado. Faça login para continuar.' };
     }
@@ -85,11 +86,10 @@ export const onboardingService = {
 
     // 2. Fallback para endpoint server-side local /api/onboarding
     try {
-      const response = await fetch('/api/onboarding', {
+      const response = await authService.fetchWithAuth('/api/onboarding', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
         },
         body: JSON.stringify(requestBody),
       });
