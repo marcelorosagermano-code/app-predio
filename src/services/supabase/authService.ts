@@ -500,49 +500,27 @@ export const authService = {
       console.warn('Erro ao consultar profiles:', err?.message);
     }
 
-    // Buscar dados do usuário autenticado no Auth (metadados são imunes a erro de tabela/RLS)
-    let authUser: any = null;
+    // Buscar dados do usuário autenticado no Auth (apenas para verificação de primeiro acesso)
     let mustChangePassword = false;
     try {
       const { data: userData } = await supabase.auth.getUser();
-      authUser = userData?.user;
-      mustChangePassword = authUser?.user_metadata?.must_change_password === true;
+      mustChangePassword = userData?.user?.user_metadata?.must_change_password === true;
     } catch {
       // Ignorar se falhar verificação opcional de first access
     }
 
-    if (!profileData && authUser) {
-      const meta = authUser.user_metadata || {};
-      const fallbackCondoId = meta.condominium_id || '37893a96-91f5-4d99-93fd-aba6a9964d10';
-      const fallbackRole = (meta.role as UserRole) || (authUser.email === 'marcelorosa.germano@gmail.com' ? 'admin' : 'morador');
-      const fallbackName = meta.full_name || (authUser.email ? authUser.email.split('@')[0] : 'Usuário');
-
-      profileData = {
-        id: authUser.id,
-        email: authUser.email || '',
-        full_name: fallbackName,
-        phone: authUser.phone || null,
-        avatar_url: null,
-        role: fallbackRole,
-        condominium_id: fallbackCondoId,
-        is_active: true,
-        created_at: authUser.created_at || new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-    }
-
     if (!profileData) {
-      return _cachedProfile || null;
+      return null;
     }
 
-    // Buscar unidade vinculada se existir (para moradores)
-    let unitNumber: string | null = authUser?.user_metadata?.unit_number || null;
-    let unitId: string | null = authUser?.user_metadata?.unit_id || null;
+    // Buscar unidade vinculada se existir (para exibição do morador - somente leitura)
+    let unitNumber: string | null = null;
+    let unitId: string | null = null;
 
     try {
       const { data: residentData } = await supabase
         .from('unit_residents')
-        .select('unit_id, units(unit_number, block, condominium_id)')
+        .select('unit_id, units(unit_number, block)')
         .eq('profile_id', userId)
         .limit(1)
         .maybeSingle();
@@ -552,13 +530,6 @@ export const authService = {
         const u = residentData.units as any;
         if (u) {
           unitNumber = u.block ? `${u.unit_number} - Bloco ${u.block}` : u.unit_number;
-          if (u.condominium_id && !profileData.condominium_id) {
-            profileData.condominium_id = u.condominium_id;
-            void supabase
-              .from('profiles')
-              .update({ condominium_id: u.condominium_id })
-              .eq('id', userId);
-          }
         }
       }
     } catch {
@@ -735,9 +706,16 @@ export const authService = {
       serverErrorMsg = netErr?.message || 'Falha de conexão com o servidor';
     }
 
-    // 2. Fallback resiliente: criação direta via Supabase client (funciona 100% no cliente mesmo com falhas na Vercel)
+    // 2. Fallback resiliente: criação direta via Supabase client (apenas se o endpoint serverless não responder)
     try {
-      const condoId = _cachedProfile?.condominiumId || session.user.user_metadata?.condominium_id || '37893a96-91f5-4d99-93fd-aba6a9964d10';
+      let condoId = _cachedProfile?.condominiumId;
+      if (!condoId) {
+        const { data: p } = await supabase.from('profiles').select('condominium_id').eq('id', session.user.id).maybeSingle();
+        condoId = p?.condominium_id;
+      }
+      if (!condoId) {
+        throw new Error('Administrador não possui condomínio vinculado.');
+      }
       const condoShortId = condoId.slice(0, 8);
       const residentEmail = `morador.ap${cleanUnit.toLowerCase().replace(/[^a-z0-9]/g, '')}.${condoShortId}@condominio.app`;
 
@@ -940,15 +918,20 @@ export const authService = {
       // Falha de rede ou endpoint serverless ausente; prossegue para consulta direta
     }
 
-    // 2. Consulta direta via Supabase client (100% funcional no client-side em qualquer ambiente)
+    // 2. Consulta direta via Supabase client (apenas se endpoint falhar)
     try {
-      const condoId = _cachedProfile?.condominiumId || session.user.user_metadata?.condominium_id || '37893a96-91f5-4d99-93fd-aba6a9964d10';
+      let condoId = _cachedProfile?.condominiumId;
+      if (!condoId) {
+        const { data: p } = await supabase.from('profiles').select('condominium_id').eq('id', session.user.id).maybeSingle();
+        condoId = p?.condominium_id;
+      }
+      if (!condoId) return [];
 
-      // 2.1 Buscar todos os profiles vinculados ao condomínio
+      // 2.1 Buscar todos os profiles vinculados ao condomínio do administrador
       const { data: profiles } = await supabase
         .from('profiles')
         .select('*')
-        .or(`condominium_id.eq.${condoId},condominium_id.is.null`)
+        .eq('condominium_id', condoId)
         .neq('is_active', false)
         .order('created_at', { ascending: false });
 
@@ -1119,7 +1102,14 @@ export const authService = {
 
     // 2. Fallback resiliente: atualização direta via Supabase client
     try {
-      const condoId = _cachedProfile?.condominiumId || session.user.user_metadata?.condominium_id || '37893a96-91f5-4d99-93fd-aba6a9964d10';
+      let condoId = _cachedProfile?.condominiumId;
+      if (!condoId) {
+        const { data: p } = await supabase.from('profiles').select('condominium_id').eq('id', session.user.id).maybeSingle();
+        condoId = p?.condominium_id;
+      }
+      if (!condoId) {
+        throw new Error('Administrador não possui condomínio vinculado.');
+      }
 
       // 2.1 Atualizar perfil
       await supabase
@@ -1234,7 +1224,14 @@ export const authService = {
 
     // 2. Fallback resiliente: desativação direta via Supabase client
     try {
-      const condoId = _cachedProfile?.condominiumId || session.user.user_metadata?.condominium_id || '37893a96-91f5-4d99-93fd-aba6a9964d10';
+      let condoId = _cachedProfile?.condominiumId;
+      if (!condoId) {
+        const { data: p } = await supabase.from('profiles').select('condominium_id').eq('id', session.user.id).maybeSingle();
+        condoId = p?.condominium_id;
+      }
+      if (!condoId) {
+        throw new Error('Administrador não possui condomínio vinculado.');
+      }
 
       // 2.1 Desvincular de unit_residents
       await supabase.from('unit_residents').delete().eq('profile_id', profileId);

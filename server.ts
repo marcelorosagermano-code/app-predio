@@ -94,7 +94,7 @@ export function registerApiRoutes(app: express.Express) {
         // Ignorar se não houver unidade
       }
 
-      // Auto-cura e resolução do condomínio: se profile.condominium_id for nulo, buscar vínculo real da unidade em unit_residents
+      // Resolução do condomínio estritamente a partir do perfil ou vínculo real em unit_residents
       let condominium = null;
       if (!profile.condominium_id) {
         try {
@@ -112,22 +112,6 @@ export function registerApiRoutes(app: express.Express) {
               .from('profiles')
               .update({ condominium_id: realCondoId })
               .eq('id', profile.id);
-          } else {
-            // Fallback caso não tenha unidade vinculada (ex: admin que acabou de criar o sistema)
-            const { data: defaultCondo } = await supabaseAdmin
-              .from('condominiums')
-              .select('*')
-              .order('created_at', { ascending: true })
-              .limit(1)
-              .maybeSingle();
-
-            if (defaultCondo) {
-              profile.condominium_id = defaultCondo.id;
-              await supabaseAdmin
-                .from('profiles')
-                .update({ condominium_id: defaultCondo.id })
-                .eq('id', profile.id);
-            }
           }
         } catch (healErr) {
           console.warn('Aviso ao resolver condomínio do perfil:', healErr);
@@ -141,45 +125,6 @@ export function registerApiRoutes(app: express.Express) {
           .eq('id', profile.condominium_id)
           .maybeSingle();
         condominium = condoData || null;
-      }
-
-      // Auto-cura da unidade: se o morador ainda não tiver unidade mapeada, buscar dos metadados ou email
-      if (!unitId && condominium?.id) {
-        try {
-          let foundUnitNumber = user.user_metadata?.unit_number || null;
-          if (!foundUnitNumber && profile.email?.includes('morador.ap')) {
-            const match = profile.email.match(/morador\.ap([a-z0-9]+)\./i);
-            if (match && match[1]) {
-              foundUnitNumber = match[1].toUpperCase();
-            }
-          }
-
-          if (foundUnitNumber) {
-            const { data: matchedUnit } = await supabaseAdmin
-              .from('units')
-              .select('id, unit_number, block')
-              .eq('condominium_id', condominium.id)
-              .ilike('unit_number', foundUnitNumber)
-              .maybeSingle();
-
-            if (matchedUnit) {
-              unitId = matchedUnit.id;
-              unitNumber = matchedUnit.block ? `${matchedUnit.unit_number} - Bloco ${matchedUnit.block}` : matchedUnit.unit_number;
-              await supabaseAdmin
-                .from('unit_residents')
-                .insert({
-                  unit_id: matchedUnit.id,
-                  profile_id: user.id,
-                  name: profile.full_name,
-                  email: profile.email,
-                  relationship_type: 'tenant',
-                  is_primary: true,
-                });
-            }
-          }
-        } catch (unitHealErr) {
-          console.warn('Aviso ao auto-vincular morador à unidade:', unitHealErr);
-        }
       }
 
       const rolePermissionsMap: Record<string, string[]> = {
@@ -1066,14 +1011,24 @@ export function registerApiRoutes(app: express.Express) {
         .eq('id', adminAuthUser.id)
         .maybeSingle();
 
-      const userRole = adminProfile?.role || adminAuthUser.user_metadata?.role || (adminAuthUser.email === 'marcelorosa.germano@gmail.com' ? 'admin' : 'morador');
-      const condominiumId = adminProfile?.condominium_id || adminAuthUser.user_metadata?.condominium_id || '37893a96-91f5-4d99-93fd-aba6a9964d10';
+      if (!adminProfile) {
+        return res.status(403).json({ success: false, error: 'Perfil administrativo não encontrado em public.profiles.' });
+      }
+
+      const userRole = adminProfile.role;
+      const condominiumId = adminProfile.condominium_id;
 
       if (userRole !== 'admin' && userRole !== 'sindico') {
         return res.status(403).json({ success: false, error: 'Acesso negado: permissão administrativa necessária.' });
       }
 
+      if (!condominiumId) {
+        return res.status(403).json({ success: false, error: 'Acesso negado: administrador não vinculado a um condomínio válido.' });
+      }
+
       // 2. Validação dos dados recebidos
+      // SEGURANÇA: Nunca aceitar condominium_id ou role do body do frontend!
+      // Ignorar/descartar qualquer valor de role ou condominium_id enviado no payload.
       const body = req.body || {};
       const { unitNumber, responsibleName } = body;
 
@@ -1318,7 +1273,30 @@ export function registerApiRoutes(app: express.Express) {
         return res.status(500).json({ success: false, error: `Erro ao vincular morador à unidade: ${residentErr.message}` });
       }
 
-      // 8. Registrar trilha de auditoria
+      // 8. Validação final estrita de persistência em public.profiles antes de responder sucesso
+      const { data: verifiedProfile, error: verifyErr } = await supabaseAdmin
+        .from('profiles')
+        .select('id, condominium_id, role')
+        .eq('id', authUserId)
+        .maybeSingle();
+
+      if (verifyErr || !verifiedProfile || verifiedProfile.condominium_id !== condominiumId || verifiedProfile.role !== 'morador') {
+        if (isNewlyCreatedAuthUser && authUserId) {
+          try {
+            await supabaseAdmin.from('unit_residents').delete().eq('profile_id', authUserId);
+            await supabaseAdmin.from('profiles').delete().eq('id', authUserId);
+            await supabaseAdmin.auth.admin.deleteUser(authUserId);
+          } catch (cleanErr) {
+            console.error('Erro na compensação ao desfazer criação:', cleanErr);
+          }
+        }
+        return res.status(500).json({
+          success: false,
+          error: 'Falha de persistência: não foi possível garantir o condomínio e role do morador em public.profiles.',
+        });
+      }
+
+      // 9. Registrar trilha de auditoria
       await supabaseAdmin.from('activity_logs').insert({
         condominium_id: condominiumId,
         user_id: adminAuthUser.id,
