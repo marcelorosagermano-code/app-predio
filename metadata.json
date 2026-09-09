@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix Sistema de Gestão Condominial",
+  "description": "Sistema completo e intuitivo para gestão administrativa e operacional de condomínios residenciais e comerciais.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
