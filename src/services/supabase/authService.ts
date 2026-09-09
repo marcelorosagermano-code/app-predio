@@ -648,7 +648,7 @@ export const authService = {
   /**
    * Cria acesso de morador através de endpoint server-side administrativo
    */
-  async createMoradorUser(unitNumber: string, responsibleName: string): Promise<{
+  async createMoradorUser(unitNumber: string, responsibleName: string, role: string = 'morador'): Promise<{
     success: boolean;
     message: string;
     data: { unitNumber: string; responsibleName: string; initialPassword: string; profileId: string; email?: string };
@@ -674,6 +674,7 @@ export const authService = {
         body: JSON.stringify({
           unitNumber: cleanUnit,
           responsibleName: cleanName,
+          role,
         }),
       });
 

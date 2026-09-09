@@ -95,6 +95,7 @@ export const ConfiguracoesPage: React.FC = () => {
   const [isSubmittingUser, setIsSubmittingUser] = useState<boolean>(false);
   const [addUserError, setAddUserError] = useState<string>('');
   const [unitNumber, setUnitNumber] = useState<string>('');
+  const [newUserRole, setNewUserRole] = useState<string>('morador');
   const [responsibleName, setResponsibleName] = useState<string>('');
   const [createdUserSuccess, setCreatedUserSuccess] = useState<{
     unitNumber: string;
@@ -180,7 +181,7 @@ export const ConfiguracoesPage: React.FC = () => {
 
     setIsSubmittingUser(true);
     try {
-      const res = await authService.createMoradorUser(unitNumber.trim(), responsibleName.trim());
+      const res = await authService.createMoradorUser(unitNumber.trim(), responsibleName.trim(), newUserRole);
       if (res.success) {
         const cleanUnit = unitNumber.trim();
         const cleanName = responsibleName.trim();
@@ -193,8 +194,8 @@ export const ConfiguracoesPage: React.FC = () => {
           id: profileId,
           nome: cleanName,
           email: userEmail,
-          role: 'morador',
-          cargo: 'Morador',
+          role: newUserRole,
+          cargo: newUserRole === 'sindico' ? 'Síndico' : newUserRole === 'conselho' ? 'Conselho Fiscal' : 'Morador',
           ativo: true,
           unidadeNumero: cleanUnit,
           primeiroAcessoPendente: true,
@@ -217,6 +218,7 @@ export const ConfiguracoesPage: React.FC = () => {
         setIsAddUserModalOpen(false);
         setUnitNumber('');
         setResponsibleName('');
+        setNewUserRole('morador');
         // Reconcilia com o banco Supabase em background
         await loadUsers();
       } else {
@@ -455,6 +457,7 @@ export const ConfiguracoesPage: React.FC = () => {
                   setAddUserError('');
                   setUnitNumber('');
                   setResponsibleName('');
+                  setNewUserRole('morador');
                   setIsAddUserModalOpen(true);
                 }}
                 className="w-full sm:w-auto justify-center whitespace-nowrap"
@@ -1042,6 +1045,24 @@ export const ConfiguracoesPage: React.FC = () => {
               className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-600 focus:border-transparent outline-none transition-all placeholder:text-slate-400"
             />
           </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Perfil de Acesso
+            </label>
+            <select
+              id="input-modal-role"
+              value={newUserRole}
+              onChange={(e) => setNewUserRole(e.target.value)}
+              className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-600 focus:border-transparent outline-none transition-all bg-white"
+            >
+              <option value="morador">Morador</option>
+              <option value="conselho">Conselho Fiscal</option>
+              {user?.role === 'admin' && (
+                <option value="sindico">Síndico</option>
+              )}
+            </select>
+          </div>
+
 
           <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl">
             <span className="text-xs font-semibold text-slate-600 block">Senha inicial:</span>

@@ -673,7 +673,7 @@ export function registerApiRoutes(app: express.Express) {
           email_confirm: true,
           user_metadata: {
             full_name: residentFullName,
-            role: 'morador',
+            role: requestedRole,
             must_change_password: true,
             first_access_completed: false,
             unit_id: unit.id,
@@ -688,7 +688,7 @@ export function registerApiRoutes(app: express.Express) {
             condominium_id: unit.condominium_id,
             full_name: residentFullName,
             email: residentEmail,
-            role: 'morador',
+            role: requestedRole,
             is_active: true,
             updated_at: new Date().toISOString(),
           }).select().single();
@@ -763,7 +763,7 @@ export function registerApiRoutes(app: express.Express) {
               condominium_id: unit.condominium_id,
               full_name: residentProfile?.full_name || user.user_metadata?.full_name || residentFullName,
               email: residentProfile?.email || user.email || residentEmail,
-              role: 'morador',
+              role: requestedRole,
               is_active: true,
               updated_at: new Date().toISOString(),
             });
@@ -948,7 +948,7 @@ export function registerApiRoutes(app: express.Express) {
             .from('profiles')
             .update({
               condominium_id: resolvedCondoId,
-              role: 'morador',
+              role: requestedRole,
               is_active: true,
               updated_at: new Date().toISOString(),
             })
@@ -1027,10 +1027,22 @@ export function registerApiRoutes(app: express.Express) {
       }
 
       // 2. Validação dos dados recebidos
-      // SEGURANÇA: Nunca aceitar condominium_id ou role do body do frontend!
-      // Ignorar/descartar qualquer valor de role ou condominium_id enviado no payload.
+      // SEGURANÇA: Validar rigorosamente a role solicitada. O condominium_id SEMPRE será o do admin.
       const body = req.body || {};
-      const { unitNumber, responsibleName } = body;
+      const { unitNumber, responsibleName, role: requestedRoleFromClient } = body;
+      
+      let requestedRole = requestedRoleFromClient || 'morador';
+      
+      // Validação da hierarquia
+      if (requestedRole === 'admin') {
+        return res.status(403).json({ success: false, error: 'Acesso negado: Não é possível criar perfil de administrador por esta interface.' });
+      }
+      if (requestedRole === 'sindico' && userRole !== 'admin') {
+        return res.status(403).json({ success: false, error: 'Acesso negado: Apenas administradores podem cadastrar síndicos.' });
+      }
+      if (!['morador', 'sindico', 'conselho'].includes(requestedRole)) {
+        requestedRole = 'morador';
+      }
 
       if (!unitNumber || typeof unitNumber !== 'string' || !unitNumber.trim()) {
         return res.status(400).json({ success: false, error: 'Por favor, informe o número do apartamento/unidade.' });
@@ -1095,7 +1107,7 @@ export function registerApiRoutes(app: express.Express) {
 
       // 5. Gerar credencial do morador no Supabase Auth
       const sanitizedNum = cleanUnitNumber.toLowerCase().replace(/[^a-z0-9]/g, '');
-      const residentEmail = `morador.ap${sanitizedNum}.${condominiumId.slice(0, 8)}@condominio.app`;
+      const residentEmail = `${requestedRole}.ap${sanitizedNum}.${condominiumId.slice(0, 8)}@condominio.app`;
 
       // Verificar se já existe auth user com este email
       let authUserId: string;
@@ -1114,7 +1126,7 @@ export function registerApiRoutes(app: express.Express) {
           password: '000000',
           user_metadata: {
             full_name: cleanResponsibleName,
-            role: 'morador',
+            role: requestedRole,
             must_change_password: true,
             first_access_completed: false,
             unit_id: unit.id,
@@ -1132,7 +1144,7 @@ export function registerApiRoutes(app: express.Express) {
             email_confirm: true,
             user_metadata: {
               full_name: cleanResponsibleName,
-              role: 'morador',
+              role: requestedRole,
               must_change_password: true,
               first_access_completed: false,
               unit_id: unit.id,
@@ -1160,7 +1172,7 @@ export function registerApiRoutes(app: express.Express) {
               options: {
                 data: {
                   full_name: cleanResponsibleName,
-                  role: 'morador',
+                  role: requestedRole,
                   must_change_password: true,
                   first_access_completed: false,
                   unit_id: unit.id,
@@ -1204,7 +1216,7 @@ export function registerApiRoutes(app: express.Express) {
           condominium_id: condominiumId,
           full_name: cleanResponsibleName,
           email: residentEmail,
-          role: 'morador',
+          role: requestedRole,
           is_active: true,
           updated_at: new Date().toISOString(),
         })
@@ -1308,7 +1320,7 @@ export function registerApiRoutes(app: express.Express) {
           unit_id: unit.id,
           unit_number: unit.unit_number,
           responsible_name: cleanResponsibleName,
-          role: 'morador',
+          role: requestedRole,
         },
       });
 
@@ -1395,10 +1407,15 @@ export function registerApiRoutes(app: express.Express) {
         );
       }
 
-      const profiles = (rawProfiles || []).map((p) => ({
+      let profiles = (rawProfiles || []).map((p) => ({
         ...p,
         condominium_id: p.condominium_id || condominiumId,
       }));
+
+      // HIERARQUIA: O síndico não pode ver o administrador
+      if (userRole === 'sindico') {
+        profiles = profiles.filter(p => p.role !== 'admin');
+      }
 
       // 3. Buscar vínculos com unidades
       const { data: residents } = await supabaseAdmin
@@ -1471,7 +1488,7 @@ export function registerApiRoutes(app: express.Express) {
               id: r.profile_id || r.id,
               nome: r.name || r.email || `Morador Unidade ${uNum}`,
               email: r.email || '',
-              role: 'morador',
+              role: requestedRole,
               cargo: 'Morador',
               ativo: true,
               unidadeNumero: uNum,
@@ -1561,8 +1578,12 @@ export function registerApiRoutes(app: express.Express) {
         return res.status(404).json({ success: false, error: 'Usuário não encontrado neste condomínio.' });
       }
 
-      if (targetProfile.role !== 'morador') {
-        return res.status(400).json({ success: false, error: 'Apenas usuários moradores podem ser editados por este fluxo.' });
+      if (targetProfile.role === 'admin') {
+        return res.status(403).json({ success: false, error: 'Usuários com perfil de administrador não podem ser editados por esta interface.' });
+      }
+
+      if (userRole === 'sindico' && targetProfile.role === 'sindico') {
+        return res.status(403).json({ success: false, error: 'Um síndico não pode editar outro síndico. Solicite ao administrador.' });
       }
 
       // 4. Localizar ou criar a unidade
@@ -1687,7 +1708,7 @@ export function registerApiRoutes(app: express.Express) {
           unit_id: unit.id,
           unit_number: unit.unit_number,
           responsible_name: cleanResponsibleName,
-          role: 'morador',
+          role: requestedRole,
         },
       });
 
@@ -1762,8 +1783,12 @@ export function registerApiRoutes(app: express.Express) {
         return res.status(404).json({ success: false, error: 'Usuário não encontrado neste condomínio.' });
       }
 
-      if (targetProfile.role !== 'morador') {
-        return res.status(400).json({ success: false, error: 'Apenas usuários moradores podem ser excluídos por este fluxo.' });
+      if (targetProfile.role === 'admin') {
+        return res.status(403).json({ success: false, error: 'Usuários com perfil de administrador não podem ser excluídos por esta interface.' });
+      }
+
+      if (userRole === 'sindico' && targetProfile.role === 'sindico') {
+        return res.status(403).json({ success: false, error: 'Um síndico não pode excluir outro síndico. Solicite ao administrador.' });
       }
 
       // 4. Buscar informações da unidade antes de desvincular (para log e histórico)
@@ -1813,7 +1838,7 @@ export function registerApiRoutes(app: express.Express) {
         metadata: {
           unit_number: unitNum,
           responsible_name: targetProfile.full_name,
-          role: 'morador',
+          role: requestedRole,
         },
       });
 

@@ -21,7 +21,7 @@ import { ShieldAlert, ArrowLeft } from 'lucide-react';
 import { Button } from './components/ui/Button';
 
 const AppContent: React.FC = () => {
-  const { status, user, isAdmin, isCouncil, hasPermission } = useAuth();
+  const { status, user, isAdmin, isSindico, isCouncil, hasPermission } = useAuth();
   
   const getInitialTab = (): string => {
     try {
@@ -88,7 +88,7 @@ const AppContent: React.FC = () => {
   // Ajustar tab inicial conforme o perfil do usuário logado
   useEffect(() => {
     if (user) {
-      if (isAdmin || isCouncil) {
+      if (isAdmin || isSindico || isCouncil) {
         if (currentTab.startsWith('morador-')) {
           handleSelectTab('dashboard');
         }
@@ -98,7 +98,7 @@ const AppContent: React.FC = () => {
         }
       }
     }
-  }, [user?.role, user?.id, isAdmin, isCouncil]);
+  }, [user?.role, user?.id, isAdmin, isSindico, isCouncil]);
 
   // 1. Estado de Recuperação de Senha
   if (isPasswordRecoveryMode) {
@@ -156,7 +156,7 @@ const AppContent: React.FC = () => {
   const renderContent = () => {
     // Dashboard Geral / Administrativo
     if (currentTab === 'dashboard') {
-      return (isAdmin || isCouncil) ? (
+      return (isAdmin || isSindico || isCouncil) ? (
         <AdminDashboard onNavigate={handleSelectTab} />
       ) : (
         <MoradorDashboard onNavigate={handleSelectTab} />
