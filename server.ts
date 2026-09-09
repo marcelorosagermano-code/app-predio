@@ -829,18 +829,58 @@ export function registerApiRoutes(app: express.Express) {
         return res.status(401).json({ success: false, error: 'Sessão inválida ou expirada.' });
       }
 
-      const { error: updateErr } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
-        password: newPassword,
-        user_metadata: {
-          ...user.user_metadata,
-          must_change_password: false,
-          first_access_completed: true,
-          first_access_completed_at: new Date().toISOString(),
-        },
-      });
+      let updateSucceeded = false;
+      let updateErrorMsg = '';
 
-      if (updateErr) {
-        return res.status(500).json({ success: false, error: `Erro ao atualizar senha: ${updateErr.message}` });
+      // Tentativa 1: Via Admin API (requer service_role key)
+      try {
+        const { error: updateErr } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
+          password: newPassword,
+          user_metadata: {
+            ...user.user_metadata,
+            must_change_password: false,
+            first_access_completed: true,
+            first_access_completed_at: new Date().toISOString(),
+          },
+        });
+        if (!updateErr) {
+          updateSucceeded = true;
+        } else {
+          updateErrorMsg = updateErr.message;
+        }
+      } catch (adminErr: any) {
+        updateErrorMsg = adminErr?.message || 'Falha na atualização administrativa';
+      }
+
+      // Tentativa 2: Se falhar (ex: service_role ausente na Vercel), atualizar com a própria sessão do usuário
+      if (!updateSucceeded) {
+        try {
+          const userClient = createClient(supabaseUrl, process.env.VITE_SUPABASE_ANON_KEY || supabaseServiceKey, {
+            auth: { persistSession: false },
+            global: {
+              headers: { Authorization: `Bearer ${token}` },
+            },
+          });
+          const { error: userUpdateErr } = await userClient.auth.updateUser({
+            password: newPassword,
+            data: {
+              must_change_password: false,
+              first_access_completed: true,
+              first_access_completed_at: new Date().toISOString(),
+            },
+          });
+          if (!userUpdateErr) {
+            updateSucceeded = true;
+          } else {
+            updateErrorMsg = userUpdateErr.message;
+          }
+        } catch (clientErr: any) {
+          console.warn('Falha na atualização de senha via userClient:', clientErr);
+        }
+      }
+
+      if (!updateSucceeded) {
+        return res.status(500).json({ success: false, error: `Erro ao atualizar senha: ${updateErrorMsg}` });
       }
 
       const condoId = user.user_metadata?.condominium_id || null;
@@ -1596,10 +1636,20 @@ export function createApiApp() {
   const app = express();
 
   // 1. Suporte a Vercel Serverless Functions:
-  // Se a Vercel já consumiu e fez parse do body em req.body, marcamos _body = true
-  // para que express.json() não trave esperando dados de uma stream já consumida.
+  // Se a Vercel já consumiu e fez parse do body em req.body, ou se o stream terminou,
+  // marcamos _body = true para que express.json() não trave esperando dados de stream consumida.
   app.use((req, res, next) => {
-    if (req.body && typeof req.body === 'object') {
+    if (req.body !== undefined && req.body !== null) {
+      if (typeof req.body === 'string') {
+        try {
+          req.body = JSON.parse(req.body);
+        } catch {
+          // mantém como string
+        }
+      }
+      (req as any)._body = true;
+    } else if (req.complete || (req as any).readableEnded) {
+      req.body = {};
       (req as any)._body = true;
     }
     next();

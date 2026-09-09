@@ -203,34 +203,99 @@ export const authService = {
   },
 
   /**
-   * Conclui o primeiro acesso do morador atualizando sua senha pessoal
+   * Conclui o primeiro acesso do morador atualizando sua senha pessoal.
+   * Utiliza estratégia resiliente:
+   * 1. Atualiza diretamente via Supabase Auth no cliente (100% tolerante a falhas de Vercel/serverless).
+   * 2. Se a chamada direta funcionar, sincroniza em segundo plano com o backend para registrar logs.
+   * 3. Se a chamada direta falhar, recorre à API do servidor (/api/auth/complete-first-access).
    */
   async completeFirstAccess(newPassword: string) {
+    let directSuccess = false;
+    let directError: string | null = null;
+
+    // 1. Tentar atualizar diretamente no Supabase Auth no navegador
+    if (supabase) {
+      try {
+        const { data: updateData, error: updateErr } = await supabase.auth.updateUser({
+          password: newPassword,
+          data: {
+            must_change_password: false,
+            first_access_completed: true,
+            first_access_completed_at: new Date().toISOString(),
+          },
+        });
+
+        if (!updateErr && updateData?.user) {
+          directSuccess = true;
+          if (_cachedProfile) {
+            _cachedProfile.mustChangePassword = false;
+          }
+        } else if (updateErr) {
+          directError = updateErr.message;
+          console.warn('Atualização direta no Supabase Auth retornou erro:', updateErr.message);
+        }
+      } catch (err: any) {
+        directError = err?.message || 'Falha ao comunicar diretamente com Supabase Auth';
+        console.warn('Exceção na atualização direta de senha:', err);
+      }
+    }
+
+    // 2. Se a senha já foi salva diretamente no Supabase, concluímos com sucesso!
+    // Disparamos o registro de log no servidor de forma assíncrona/não bloqueante
+    if (directSuccess) {
+      try {
+        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timeoutId = controller ? setTimeout(() => controller.abort(), 4000) : null;
+        this.fetchWithAuth('/api/auth/complete-first-access', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ newPassword }),
+          signal: controller?.signal,
+        })
+          .catch(() => {})
+          .finally(() => {
+            if (timeoutId) clearTimeout(timeoutId);
+          });
+      } catch {
+        // Log em segundo plano não deve interromper o fluxo do usuário
+      }
+
+      return { success: true };
+    }
+
+    // 3. Fallback via API do servidor caso a atualização direta pelo cliente não tenha ocorrido
     const session = await this.getSession();
     const token = session?.access_token;
 
     if (!token) {
-      // Se não há token ativo (modo local sem supabase), apenas resolve
       if (!isSupabaseConfigured) {
         return { success: true };
       }
-      return { success: false, error: 'Sessão não encontrada.' };
+      return { success: false, error: directError || 'Sessão não encontrada.' };
     }
 
-    const res = await this.fetchWithAuth('/api/auth/complete-first-access', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ newPassword }),
-    });
+    try {
+      const res = await this.fetchWithAuth('/api/auth/complete-first-access', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ newPassword }),
+      });
 
-    const { ok, data, error: parsedErr } = await parseApiResponse(res);
-    if (!ok || !data?.success) {
-      return { success: false, error: parsedErr || data?.error || 'Falha ao atualizar senha.' };
+      const { ok, data, error: parsedErr } = await parseApiResponse(res);
+      if (!ok || !data?.success) {
+        return { success: false, error: parsedErr || data?.error || directError || 'Falha ao atualizar senha.' };
+      }
+
+      if (_cachedProfile) {
+        _cachedProfile.mustChangePassword = false;
+      }
+
+      return { success: true };
+    } catch (apiCatch: any) {
+      return { success: false, error: directError || apiCatch?.message || 'Falha ao comunicar com o servidor.' };
     }
-
-    return { success: true };
   },
 
   /**
