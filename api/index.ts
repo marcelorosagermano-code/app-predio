@@ -1,11 +1,25 @@
-import { createApiApp } from '../server.ts';
+import { createApiApp } from '../server';
 
-const app = createApiApp();
+console.log('[BOOT] Initializing API function...');
+
+let app: any;
+try {
+  app = createApiApp();
+  console.log('[BOOT] Express app created successfully.');
+} catch (e: any) {
+  console.error('[BOOT_ERROR] Failed to create Express app:', e);
+}
 
 export default function handler(req: any, res: any) {
+  console.log(`[API_REQUEST] Incoming request: ${req.method} ${req.url}`);
   try {
+    if (!app) {
+      console.error('[API_ERROR] App not initialized.');
+      return res.status(500).json({ success: false, error: 'App not initialized.' });
+    }
     // 1. Identificar caminho alvo com suporte a todas as variações de rewrite da Vercel
     let targetPath = '';
+
 
     // Cabeçalhos comuns injetados pelo proxy da Vercel
     const forwardedUri =

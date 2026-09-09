@@ -10,11 +10,16 @@ function getSupabaseConfig() {
     process.env.NEXT_PUBLIC_SUPABASE_URL ||
     '';
   const supabaseServiceKey =
+    process.env.SUPABASE_SECRET_KEY ||
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     process.env.SUPABASE_SERVICE_KEY ||
     process.env.VITE_SUPABASE_ANON_KEY ||
     process.env.SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_PUBLISHABLE_KEY ||
     '';
+
+  console.log(`[ENV] Supabase URL present: ${!!supabaseUrl}, Supabase Key present: ${!!supabaseServiceKey}`);
+
   return { supabaseUrl, supabaseServiceKey };
 }
 
@@ -211,8 +216,7 @@ export function registerApiRoutes(app: express.Express) {
       }
 
       const token = authHeader.replace('Bearer ', '');
-      const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+      const { supabaseUrl, supabaseServiceKey } = getSupabaseConfig();
 
       if (!supabaseUrl || !supabaseServiceKey) {
         return res.status(500).json({ success: false, error: 'Configuração do Supabase ausente no servidor.' });
@@ -316,8 +320,7 @@ export function registerApiRoutes(app: express.Express) {
       }
 
       const rawInput = String(unitNumber).trim();
-      const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+      const { supabaseUrl, supabaseServiceKey } = getSupabaseConfig();
 
       if (!supabaseUrl || !supabaseServiceKey) {
         return res.status(500).json({ success: false, error: 'Configuração do Supabase ausente no servidor.' });
@@ -330,7 +333,8 @@ export function registerApiRoutes(app: express.Express) {
       // 0. Autenticação Direta por E-mail (Admin, Síndico, Conselho ou Morador)
       if (rawInput.includes('@')) {
         const inputEmail = rawInput.toLowerCase().trim();
-        const authClient = createClient(supabaseUrl, process.env.VITE_SUPABASE_ANON_KEY || supabaseServiceKey, {
+        const anonKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || supabaseServiceKey;
+        const authClient = createClient(supabaseUrl, anonKey, {
           auth: { persistSession: false },
         });
 
@@ -637,7 +641,8 @@ export function registerApiRoutes(app: express.Express) {
       }
 
       // 3. Autenticação através do Supabase Auth
-      const authClient = createClient(supabaseUrl, process.env.VITE_SUPABASE_ANON_KEY || supabaseServiceKey, {
+      const anonKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || supabaseServiceKey;
+      const authClient = createClient(supabaseUrl, anonKey, {
         auth: { persistSession: false },
       });
 
@@ -901,7 +906,8 @@ export function registerApiRoutes(app: express.Express) {
       // Tentativa 2: Se falhar (ex: service_role ausente na Vercel), atualizar com a própria sessão do usuário
       if (!updateSucceeded) {
         try {
-          const userClient = createClient(supabaseUrl, process.env.VITE_SUPABASE_ANON_KEY || supabaseServiceKey, {
+          const anonKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || supabaseServiceKey;
+          const userClient = createClient(supabaseUrl, anonKey, {
             auth: { persistSession: false },
             global: {
               headers: { Authorization: `Bearer ${token}` },
@@ -2118,7 +2124,8 @@ async function startServer() {
 
   // Configuração do Vite middleware para desenvolvimento / SPA em produção
   if (process.env.NODE_ENV !== 'production') {
-    const { createServer: createViteServer } = await import('vite');
+    const vitePkg = 'vite';
+    const { createServer: createViteServer } = await import(/* @vite-ignore */ vitePkg);
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
