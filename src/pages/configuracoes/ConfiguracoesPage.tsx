@@ -182,6 +182,33 @@ export const ConfiguracoesPage: React.FC = () => {
     try {
       const res = await authService.createMoradorUser(unitNumber.trim(), responsibleName.trim());
       if (res.success) {
+        const cleanUnit = unitNumber.trim();
+        const cleanName = responsibleName.trim();
+        const profileId = res.data?.profileId || `usr-${Date.now()}`;
+        const userEmail =
+          res.data?.email ||
+          `morador.ap${cleanUnit.toLowerCase().replace(/[^a-z0-9]/g, '')}@condominio.app`;
+
+        const newUserItem: CondominiumUserItem = {
+          id: profileId,
+          nome: cleanName,
+          email: userEmail,
+          role: 'morador',
+          cargo: 'Morador',
+          ativo: true,
+          unidadeNumero: cleanUnit,
+          primeiroAcessoPendente: true,
+          criadoEm: new Date().toISOString(),
+        };
+
+        // Injeta imediatamente na lista local para exibição instantânea sem depender de F5 ou delay de rede
+        setUsersList((prev) => {
+          const filtered = prev.filter(
+            (u) => u.id !== profileId && !(u.unidadeNumero === cleanUnit && u.role === 'morador')
+          );
+          return [newUserItem, ...filtered];
+        });
+
         setCreatedUserSuccess({
           unitNumber: res.data.unitNumber,
           responsibleName: res.data.responsibleName,
@@ -190,6 +217,7 @@ export const ConfiguracoesPage: React.FC = () => {
         setIsAddUserModalOpen(false);
         setUnitNumber('');
         setResponsibleName('');
+        // Reconcilia com o banco Supabase em background
         await loadUsers();
       } else {
         setAddUserError(res.message || 'Erro ao criar usuário.');
@@ -226,12 +254,27 @@ export const ConfiguracoesPage: React.FC = () => {
 
     setIsSubmittingEdit(true);
     try {
+      const updatedUnit = editUnitNumber.trim();
+      const updatedName = editResponsibleName.trim();
+
       const res = await authService.updateMoradorUser(
         editingUser.id,
-        editUnitNumber.trim(),
-        editResponsibleName.trim()
+        updatedUnit,
+        updatedName
       );
       if (res.success) {
+        // Atualiza imediatamente o item correspondente no estado da lista
+        setUsersList((prev) =>
+          prev.map((u) =>
+            u.id === editingUser.id
+              ? {
+                  ...u,
+                  nome: updatedName,
+                  unidadeNumero: updatedUnit,
+                }
+              : u
+          )
+        );
         setIsEditUserModalOpen(false);
         setEditingUser(null);
         setActionFeedback({ type: 'success', message: 'Usuário atualizado com sucesso.' });

@@ -681,7 +681,7 @@ export const authService = {
   async createMoradorUser(unitNumber: string, responsibleName: string): Promise<{
     success: boolean;
     message: string;
-    data: { unitNumber: string; responsibleName: string; initialPassword: string; profileId: string };
+    data: { unitNumber: string; responsibleName: string; initialPassword: string; profileId: string; email?: string };
   }> {
     const cleanUnit = unitNumber.trim().replace(/^(apartamento|apto\.?|ap\.?|unidade)\s*/i, '').trim();
     const cleanName = responsibleName.trim();
@@ -710,6 +710,14 @@ export const authService = {
       const parsed = await parseApiResponse(resp);
       if (parsed.ok && parsed.data?.success) {
         return parsed.data;
+      }
+      // Se o servidor respondeu com erro de regra de negócio (ex: 400 duplicidade, 403 não autorizado)
+      if (!resp.ok && resp.status >= 400 && resp.status < 500 && resp.status !== 404) {
+        return {
+          success: false,
+          message: parsed.data?.error || parsed.error || 'Operação não permitida pelo servidor.',
+          data: null as any,
+        };
       }
       serverFailed = true;
       serverErrorMsg = parsed.data?.error || parsed.error || 'Falha no endpoint do servidor';
@@ -874,6 +882,7 @@ export const authService = {
           responsibleName: cleanName,
           initialPassword: '000000',
           profileId: profileId!,
+          email: residentEmail,
         },
       };
     } catch (fallbackErr: any) {
@@ -902,13 +911,19 @@ export const authService = {
       return [];
     }
 
-    // 1. Tentar buscar via endpoint server-side /api/admin/list-users com auto-refresh
+    // 1. Tentar buscar via endpoint server-side /api/admin/list-users com auto-refresh e sem cache HTTP
     try {
-      const resp = await this.fetchWithAuth('/api/admin/list-users');
+      const resp = await this.fetchWithAuth('/api/admin/list-users', {
+        headers: {
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          Pragma: 'no-cache',
+        },
+        cache: 'no-store',
+      });
 
       if (resp.ok) {
         const resJson = await resp.json();
-        if (resJson.success && Array.isArray(resJson.users) && resJson.users.length > 0) {
+        if (resJson.success && Array.isArray(resJson.users)) {
           return resJson.users;
         }
       }
@@ -920,31 +935,72 @@ export const authService = {
     try {
       const condoId = _cachedProfile?.condominiumId || session.user.user_metadata?.condominium_id || '37893a96-91f5-4d99-93fd-aba6a9964d10';
 
-      const { data: profiles, error: pErr } = await supabase
+      // 2.1 Buscar todos os profiles vinculados ao condomínio
+      const { data: profiles } = await supabase
         .from('profiles')
         .select('*')
         .or(`condominium_id.eq.${condoId},condominium_id.is.null`)
         .neq('is_active', false)
         .order('created_at', { ascending: false });
 
-      if (profiles && profiles.length > 0) {
-        const { data: residents } = await supabase
-          .from('unit_residents')
-          .select('profile_id, name, email, unit_id, units(id, unit_number, block)');
+      // 2.2 Buscar todas as unidades do condomínio com seus respectivos moradores vinculados
+      const { data: units } = await supabase
+        .from('units')
+        .select('id, unit_number, block, unit_residents(id, profile_id, name, email, relationship_type, is_primary, created_at)')
+        .eq('condominium_id', condoId);
 
-        return profiles.map((p: any) => {
-          let resInfo = residents?.find((r: any) => r.profile_id === p.id);
-          if (!resInfo && p.email) {
-            resInfo = residents?.find((r: any) => r.email && r.email.toLowerCase() === p.email.toLowerCase());
+      const residentsMap: Array<{
+        profileId?: string;
+        name: string;
+        email: string;
+        unitNumber: string;
+        createdAt?: string;
+      }> = [];
+
+      if (units) {
+        for (const u of units) {
+          if (Array.isArray(u.unit_residents)) {
+            for (const r of u.unit_residents) {
+              residentsMap.push({
+                profileId: r.profile_id || undefined,
+                name: r.name,
+                email: r.email,
+                unitNumber: u.unit_number,
+                createdAt: (r as any).created_at,
+              });
+            }
           }
-          let unitNumber = (resInfo?.units as any)?.unit_number || null;
+        }
+      }
+
+      const mappedList: Array<{
+        id: string;
+        nome: string;
+        email: string;
+        role: string;
+        cargo: string;
+        ativo: boolean;
+        unidadeNumero: string | null;
+        primeiroAcessoPendente: boolean;
+        criadoEm: string;
+      }> = [];
+
+      // Mapear perfis retornados
+      if (profiles && profiles.length > 0) {
+        for (const p of profiles) {
+          let resInfo = residentsMap.find((r) => r.profileId === p.id);
+          if (!resInfo && p.email) {
+            resInfo = residentsMap.find((r) => r.email && r.email.toLowerCase() === p.email.toLowerCase());
+          }
+          let unitNumber = resInfo?.unitNumber || null;
           if (!unitNumber && p.email?.includes('morador.ap')) {
             const match = p.email.match(/morador\.ap([a-z0-9]+)\./i);
             if (match && match[1]) {
               unitNumber = match[1].toUpperCase();
             }
           }
-          return {
+
+          mappedList.push({
             id: p.id,
             nome: p.full_name || p.email,
             email: p.email,
@@ -954,8 +1010,29 @@ export const authService = {
             unidadeNumero: unitNumber,
             primeiroAcessoPendente: p.role === 'morador',
             criadoEm: p.created_at || new Date().toISOString(),
-          };
-        });
+          });
+        }
+      }
+
+      // 2.3 Garantir que qualquer morador vinculado a unidade que não esteja nos perfis seja incluído
+      for (const res of residentsMap) {
+        if (!mappedList.some((m) => (res.profileId && m.id === res.profileId) || (res.email && m.email.toLowerCase() === res.email.toLowerCase()))) {
+          mappedList.push({
+            id: res.profileId || `res-${res.unitNumber}`,
+            nome: res.name || res.email,
+            email: res.email,
+            role: 'morador',
+            cargo: 'Morador',
+            ativo: true,
+            unidadeNumero: res.unitNumber,
+            primeiroAcessoPendente: true,
+            criadoEm: res.createdAt || new Date().toISOString(),
+          });
+        }
+      }
+
+      if (mappedList.length > 0) {
+        return mappedList;
       }
     } catch (directErr) {
       console.warn('Consulta direta a profiles falhou:', directErr);
@@ -1016,6 +1093,13 @@ export const authService = {
       const parsed = await parseApiResponse(resp);
       if (parsed.ok && parsed.data?.success) {
         return parsed.data;
+      }
+      if (!resp.ok && resp.status >= 400 && resp.status < 500 && resp.status !== 404) {
+        return {
+          success: false,
+          message: parsed.data?.error || parsed.error || 'Operação não permitida pelo servidor.',
+          data: null as any,
+        };
       }
       serverFailed = true;
       serverErrorMsg = parsed.data?.error || parsed.error || 'Falha no endpoint do servidor';
@@ -1125,6 +1209,12 @@ export const authService = {
       const parsed = await parseApiResponse(resp);
       if (parsed.ok && parsed.data?.success) {
         return parsed.data;
+      }
+      if (!resp.ok && resp.status >= 400 && resp.status < 500 && resp.status !== 404) {
+        return {
+          success: false,
+          message: parsed.data?.error || parsed.error || 'Operação não permitida pelo servidor.',
+        };
       }
       serverFailed = true;
       serverErrorMsg = parsed.data?.error || parsed.error || 'Falha no endpoint do servidor';

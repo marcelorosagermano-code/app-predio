@@ -1058,7 +1058,9 @@ export function registerApiRoutes(app: express.Express) {
         .eq('unit_id', unit.id);
 
       const activeResident = existingResidents?.find(
-        (r) => r.profile_id && r.profiles && r.profiles.is_active && r.profiles.role === 'morador'
+        (r) =>
+          (r.profile_id && r.profiles && r.profiles.is_active && r.profiles.role === 'morador') ||
+          (r.is_primary && r.email && r.email.includes('morador.ap'))
       );
 
       if (activeResident) {
@@ -1071,6 +1073,7 @@ export function registerApiRoutes(app: express.Express) {
 
       // Verificar se já existe auth user com este email
       let authUserId: string;
+      let isNewlyCreatedAuthUser = false;
 
       const { data: existingProfileByEmail } = await supabaseAdmin
         .from('profiles')
@@ -1114,6 +1117,7 @@ export function registerApiRoutes(app: express.Express) {
 
           if (newAuthUser?.user?.id) {
             createdId = newAuthUser.user.id;
+            isNewlyCreatedAuthUser = true;
           } else {
             console.warn('supabaseAdmin.auth.admin.createUser falhou, tentando fallback signUp:', authCreateErr?.message);
           }
@@ -1141,6 +1145,7 @@ export function registerApiRoutes(app: express.Express) {
             });
             if (signUpData?.user?.id) {
               createdId = signUpData.user.id;
+              isNewlyCreatedAuthUser = true;
             }
           } catch (signUpErr: any) {
             console.warn('Fallback signUp falhou:', signUpErr?.message);
@@ -1182,6 +1187,14 @@ export function registerApiRoutes(app: express.Express) {
 
       if (profileErr) {
         console.error('Erro ao atualizar profiles:', profileErr);
+        // Compensação imediata: se o usuário Auth foi criado nesta requisição, limpá-lo para não deixar órfão
+        if (isNewlyCreatedAuthUser && authUserId) {
+          try {
+            await supabaseAdmin.auth.admin.deleteUser(authUserId);
+          } catch (delErr) {
+            console.error('Erro na compensação ao deletar auth user:', delErr);
+          }
+        }
         return res.status(500).json({ success: false, error: `Erro ao gravar perfil do morador: ${profileErr.message}` });
       }
 
@@ -1192,8 +1205,9 @@ export function registerApiRoutes(app: express.Express) {
         .eq('unit_id', unit.id)
         .maybeSingle();
 
+      let residentErr: any = null;
       if (existingResidentRow) {
-        await supabaseAdmin
+        const { error: uErr } = await supabaseAdmin
           .from('unit_residents')
           .update({
             profile_id: authUserId,
@@ -1204,8 +1218,9 @@ export function registerApiRoutes(app: express.Express) {
             updated_at: new Date().toISOString(),
           })
           .eq('id', existingResidentRow.id);
+        residentErr = uErr;
       } else {
-        await supabaseAdmin
+        const { error: iErr } = await supabaseAdmin
           .from('unit_residents')
           .insert({
             unit_id: unit.id,
@@ -1215,6 +1230,21 @@ export function registerApiRoutes(app: express.Express) {
             relationship_type: 'tenant',
             is_primary: true,
           });
+        residentErr = iErr;
+      }
+
+      if (residentErr) {
+        console.error('Erro ao vincular unidade:', residentErr);
+        // Compensação imediata: desfazer perfil e auth user criados
+        if (isNewlyCreatedAuthUser && authUserId) {
+          try {
+            await supabaseAdmin.from('profiles').delete().eq('id', authUserId);
+            await supabaseAdmin.auth.admin.deleteUser(authUserId);
+          } catch (delErr) {
+            console.error('Erro na compensação ao desfazer perfil e auth user:', delErr);
+          }
+        }
+        return res.status(500).json({ success: false, error: `Erro ao vincular morador à unidade: ${residentErr.message}` });
       }
 
       // 8. Registrar trilha de auditoria
@@ -1233,6 +1263,10 @@ export function registerApiRoutes(app: express.Express) {
         },
       });
 
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+
       return res.json({
         success: true,
         message: 'Usuário criado com sucesso.',
@@ -1241,6 +1275,7 @@ export function registerApiRoutes(app: express.Express) {
           responsibleName: cleanResponsibleName,
           initialPassword: '000000',
           profileId: authUserId,
+          email: residentEmail,
         },
       });
     } catch (err: any) {
@@ -1301,14 +1336,20 @@ export function registerApiRoutes(app: express.Express) {
         return res.status(500).json({ success: false, error: `Erro ao buscar usuários: ${pErr.message}` });
       }
 
-      // Auto-curar perfis com condominium_id nulo vinculando ao condomínio ativo
-      const profiles = (rawProfiles || []).map((p) => {
-        if (!p.condominium_id) {
-          p.condominium_id = condominiumId;
-          supabaseAdmin.from('profiles').update({ condominium_id: condominiumId }).eq('id', p.id).then();
-        }
-        return p;
-      });
+      // Auto-curar perfis com condominium_id nulo vinculando ao condomínio ativo de forma síncrona
+      const orphans = (rawProfiles || []).filter((p) => !p.condominium_id);
+      if (orphans.length > 0) {
+        await Promise.all(
+          orphans.map((p) =>
+            supabaseAdmin.from('profiles').update({ condominium_id: condominiumId }).eq('id', p.id)
+          )
+        );
+      }
+
+      const profiles = (rawProfiles || []).map((p) => ({
+        ...p,
+        condominium_id: p.condominium_id || condominiumId,
+      }));
 
       // 3. Buscar vínculos com unidades
       const { data: residents } = await supabaseAdmin
@@ -1371,6 +1412,30 @@ export function registerApiRoutes(app: express.Express) {
           };
         })
       );
+
+      // 5. Garantir que moradores em unit_residents de unidades do condomínio não fiquem de fora
+      if (residents && residents.length > 0) {
+        for (const r of residents) {
+          const uNum = (r.units as any)?.unit_number;
+          if (uNum && !mappedUsers.some((mu) => mu.id === r.profile_id || (r.email && mu.email?.toLowerCase() === r.email?.toLowerCase()))) {
+            mappedUsers.push({
+              id: r.profile_id || r.id,
+              nome: r.name || r.email || `Morador Unidade ${uNum}`,
+              email: r.email || '',
+              role: 'morador',
+              cargo: 'Morador',
+              ativo: true,
+              unidadeNumero: uNum,
+              primeiroAcessoPendente: true,
+              criadoEm: (r as any).created_at || new Date().toISOString(),
+            });
+          }
+        }
+      }
+
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
 
       return res.json({ success: true, users: mappedUsers });
     } catch (err: any) {
