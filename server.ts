@@ -1013,30 +1013,10 @@ export function registerApiRoutes(app: express.Express) {
         auth: { persistSession: false },
       });
 
-      // 1. Identificar o usuário autenticado
+      // 1. Identificar o usuário autenticado (1 roundtrip)
       const { data: { user: authUser }, error: authErr } = await supabaseAdmin.auth.getUser(token);
       if (authErr || !authUser) {
         return res.status(401).json({ success: false, error: 'Sessão inválida.' });
-      }
-
-      // 2. Consultar public.profiles do solicitante
-      const { data: callerProfile } = await supabaseAdmin
-        .from('profiles')
-        .select('*')
-        .eq('id', authUser.id)
-        .maybeSingle();
-
-      if (!callerProfile) {
-        return res.status(403).json({ success: false, error: 'Perfil não encontrado.' });
-      }
-
-      const condominiumId = callerProfile.condominium_id;
-      if (!condominiumId) {
-        return res.status(403).json({ success: false, error: 'Usuário sem condomínio vinculado.' });
-      }
-
-      if (callerProfile.role !== 'sindico' && callerProfile.role !== 'admin') {
-        return res.status(403).json({ success: false, error: 'Apenas síndicos ou administradores podem transferir a sindicância.' });
       }
 
       const body = req.body || {};
@@ -1046,7 +1026,35 @@ export function registerApiRoutes(app: express.Express) {
         return res.status(400).json({ success: false, error: 'Destino não fornecido.' });
       }
 
-      // Determinar o ID do síndico atual com base em quem está chamando
+      // 2. Otimização Vercel: Buscar todos os perfis envolvidos em UMA única query (1 roundtrip ao invés de 3)
+      const idsToFetch = [authUser.id, targetProfileId];
+      if (currentSindicoId && typeof currentSindicoId === 'string') {
+        idsToFetch.push(currentSindicoId);
+      }
+
+      const { data: profiles, error: profErr } = await supabaseAdmin
+        .from('profiles')
+        .select('*')
+        .in('id', idsToFetch);
+
+      if (profErr || !profiles) {
+        return res.status(500).json({ success: false, error: 'Erro ao consultar perfis.' });
+      }
+
+      const callerProfile = profiles.find(p => p.id === authUser.id);
+      const targetProfile = profiles.find(p => p.id === targetProfileId);
+
+      if (!callerProfile) return res.status(403).json({ success: false, error: 'Perfil não encontrado.' });
+      if (!targetProfile) return res.status(404).json({ success: false, error: 'Usuário destino não encontrado.' });
+
+      const condominiumId = callerProfile.condominium_id;
+      if (!condominiumId) return res.status(403).json({ success: false, error: 'Usuário sem condomínio vinculado.' });
+
+      if (callerProfile.role !== 'sindico' && callerProfile.role !== 'admin') {
+        return res.status(403).json({ success: false, error: 'Apenas síndicos ou administradores podem transferir a sindicância.' });
+      }
+
+      // Determinar o ID do síndico atual
       let actualCurrentSindicoId = currentSindicoId;
       if (callerProfile.role === 'sindico') {
         actualCurrentSindicoId = callerProfile.id;
@@ -1054,18 +1062,11 @@ export function registerApiRoutes(app: express.Express) {
         return res.status(400).json({ success: false, error: 'O ID do síndico atual é obrigatório para administradores.' });
       }
 
-      // Validar que o destino não é o próprio síndico
       if (targetProfileId === actualCurrentSindicoId) {
         return res.status(400).json({ success: false, error: 'Não é possível transferir a sindicância para o próprio síndico.' });
       }
 
-      // Buscar perfil do síndico atual
-      const { data: currentSindicoProfile } = await supabaseAdmin
-        .from('profiles')
-        .select('*')
-        .eq('id', actualCurrentSindicoId)
-        .maybeSingle();
-
+      const currentSindicoProfile = profiles.find(p => p.id === actualCurrentSindicoId);
       if (!currentSindicoProfile || currentSindicoProfile.role !== 'sindico') {
         return res.status(404).json({ success: false, error: 'O usuário atual especificado não é um síndico válido.' });
       }
@@ -1075,17 +1076,6 @@ export function registerApiRoutes(app: express.Express) {
       }
 
       const targetCondominiumId = callerProfile.role === 'admin' ? currentSindicoProfile.condominium_id : condominiumId;
-
-      // Buscar perfil do destino
-      const { data: targetProfile } = await supabaseAdmin
-        .from('profiles')
-        .select('*')
-        .eq('id', targetProfileId)
-        .maybeSingle();
-
-      if (!targetProfile) {
-        return res.status(404).json({ success: false, error: 'Usuário destino não encontrado.' });
-      }
 
       if (targetProfile.condominium_id !== targetCondominiumId) {
         return res.status(403).json({ success: false, error: 'O usuário destino deve pertencer ao mesmo condomínio.' });
@@ -1099,79 +1089,51 @@ export function registerApiRoutes(app: express.Express) {
         return res.status(400).json({ success: false, error: 'O usuário destino já é um síndico.' });
       }
 
-      // Segurança adicional: Verificar se não estamos criando um segundo síndico acidentalmente
-      const { data: existingSindicos } = await supabaseAdmin
+      // 3. Segurança: Verificar múltiplos síndicos (1 roundtrip leve)
+      const { count: existingSindicosCount } = await supabaseAdmin
         .from('profiles')
-        .select('id')
+        .select('*', { count: 'exact', head: true })
         .eq('condominium_id', targetCondominiumId)
         .eq('role', 'sindico')
         .neq('id', actualCurrentSindicoId);
 
-      if (existingSindicos && existingSindicos.length > 0) {
+      if (existingSindicosCount && existingSindicosCount > 0) {
         return res.status(400).json({ success: false, error: 'Inconsistência detectada: Múltiplos síndicos encontrados. Contate o suporte.' });
       }
 
-      // Simular Transação (Atomicidade Node.js)
-      const originalTargetRole = targetProfile.role;
+      // 4. Executar Transferência no Banco (Profiles) via Promise.all para minimizar o tempo total na Vercel
+      const updateTargetPromise = supabaseAdmin.from('profiles').update({ role: 'sindico' }).eq('id', targetProfileId);
+      const updateCurrentPromise = supabaseAdmin.from('profiles').update({ role: 'morador' }).eq('id', actualCurrentSindicoId);
+      
+      const [targetRes, currentRes] = await Promise.all([updateTargetPromise, updateCurrentPromise]);
 
-      // Passo 1: Promover o destino
-      const { error: targetErr } = await supabaseAdmin
-        .from('profiles')
-        .update({ role: 'sindico' })
-        .eq('id', targetProfileId);
-
-      if (targetErr) {
-        return res.status(500).json({ success: false, error: 'Falha ao promover o novo síndico.' });
+      if (targetRes.error || currentRes.error) {
+        // Rollback best-effort caso falhe
+        await supabaseAdmin.from('profiles').update({ role: targetProfile.role }).eq('id', targetProfileId);
+        await supabaseAdmin.from('profiles').update({ role: 'sindico' }).eq('id', actualCurrentSindicoId);
+        return res.status(500).json({ success: false, error: 'Falha ao atualizar perfis. Operação revertida.' });
       }
 
-      // Passo 2: Rebaixar o síndico atual
-      const { error: currentErr } = await supabaseAdmin
-        .from('profiles')
-        .update({ role: 'morador' })
-        .eq('id', actualCurrentSindicoId);
+      // 5. Inserir log sincronamente para garantir a trilha
+      await supabaseAdmin.from('activity_logs').insert({
+        condominium_id: targetCondominiumId,
+        user_id: callerProfile.id,
+        action: 'TRANSFERENCIA_SINDICANCIA',
+        entity_type: 'profile',
+        entity_id: targetProfileId,
+        description: `Sindicância transferida de ${currentSindicoProfile.full_name || 'Usuário'} para ${targetProfile.full_name || 'Usuário'}.`,
+        metadata: {
+          old_sindico_id: actualCurrentSindicoId,
+          new_sindico_id: targetProfileId,
+          executed_by: callerProfile.role
+        },
+      });
 
-      if (currentErr) {
-        // ROLLBACK Passo 1
-        await supabaseAdmin.from('profiles').update({ role: originalTargetRole }).eq('id', targetProfileId);
-        return res.status(500).json({ success: false, error: 'Falha ao rebaixar o síndico atual. Operação revertida.' });
-      }
-
-      // Passo 3 e 4: Atualizar metadados de autenticação e registrar logs (em paralelo para evitar timeout na Vercel)
-      try {
-        const updateTargetAuth = (async () => {
-          try {
-            await supabaseAdmin.auth.admin.updateUserById(targetProfileId, { user_metadata: { role: 'sindico' } });
-          } catch(e) { console.warn('Erro auth target:', e); }
-        })();
-
-        const updateCurrentAuth = (async () => {
-          try {
-            await supabaseAdmin.auth.admin.updateUserById(actualCurrentSindicoId, { user_metadata: { role: 'morador' } });
-          } catch(e) { console.warn('Erro auth current:', e); }
-        })();
-
-        const insertLog = (async () => {
-          try {
-            await supabaseAdmin.from('activity_logs').insert({
-              condominium_id: targetCondominiumId,
-              user_id: callerProfile.id,
-              action: 'TRANSFERENCIA_SINDICANCIA',
-              entity_type: 'profile',
-              entity_id: targetProfileId,
-              description: `Sindicância transferida de ${currentSindicoProfile.full_name} para ${targetProfile.full_name}.`,
-              metadata: {
-                old_sindico_id: actualCurrentSindicoId,
-                new_sindico_id: targetProfileId,
-                executed_by: callerProfile.role
-              },
-            });
-          } catch(e) { console.warn('Erro log:', e); }
-        })();
-
-        await Promise.all([updateTargetAuth, updateCurrentAuth, insertLog]);
-      } catch (parallelErr) {
-        console.warn('Erro paralelo ignorado:', parallelErr);
-      }
+      // 6. Atualizar Auth.users em background (Fire and Forget)
+      // REGRA: A fonte de verdade é public.profiles. Não podemos deixar o updateUserById (que é lento e frágil)
+      // causar um timeout e quebrar a transferência.
+      supabaseAdmin.auth.admin.updateUserById(targetProfileId, { user_metadata: { role: 'sindico' } }).catch(() => {});
+      supabaseAdmin.auth.admin.updateUserById(actualCurrentSindicoId, { user_metadata: { role: 'morador' } }).catch(() => {});
 
       return res.json({ success: true, message: 'Transferência concluída com sucesso.' });
     } catch (err: any) {
