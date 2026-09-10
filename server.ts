@@ -1136,32 +1136,41 @@ export function registerApiRoutes(app: express.Express) {
         return res.status(500).json({ success: false, error: 'Falha ao rebaixar o síndico atual. Operação revertida.' });
       }
 
-      // Passo 3: Atualizar metadados de autenticação
-      await supabaseAdmin.auth.admin.updateUserById(targetProfileId, {
-        user_metadata: { role: 'sindico' }
-      }).catch(console.warn);
-
-      await supabaseAdmin.auth.admin.updateUserById(actualCurrentSindicoId, {
-        user_metadata: { role: 'morador' }
-      }).catch(console.warn);
-
-      // Passo 4: Registrar auditoria (Activity Logs)
+      // Passo 3 e 4: Atualizar metadados de autenticação e registrar logs (em paralelo para evitar timeout na Vercel)
       try {
-        await supabaseAdmin.from('activity_logs').insert({
-          condominium_id: targetCondominiumId,
-          user_id: callerProfile.id,
-          action: 'TRANSFERENCIA_SINDICANCIA',
-          entity_type: 'profile',
-          entity_id: targetProfileId,
-          description: `Sindicância transferida de ${currentSindicoProfile.full_name} para ${targetProfile.full_name}.`,
-          metadata: {
-            old_sindico_id: actualCurrentSindicoId,
-            new_sindico_id: targetProfileId,
-            executed_by: callerProfile.role
-          },
-        });
-      } catch (logErr) {
-        console.warn('Falha ao registrar log de transferência:', logErr);
+        const updateTargetAuth = (async () => {
+          try {
+            await supabaseAdmin.auth.admin.updateUserById(targetProfileId, { user_metadata: { role: 'sindico' } });
+          } catch(e) { console.warn('Erro auth target:', e); }
+        })();
+
+        const updateCurrentAuth = (async () => {
+          try {
+            await supabaseAdmin.auth.admin.updateUserById(actualCurrentSindicoId, { user_metadata: { role: 'morador' } });
+          } catch(e) { console.warn('Erro auth current:', e); }
+        })();
+
+        const insertLog = (async () => {
+          try {
+            await supabaseAdmin.from('activity_logs').insert({
+              condominium_id: targetCondominiumId,
+              user_id: callerProfile.id,
+              action: 'TRANSFERENCIA_SINDICANCIA',
+              entity_type: 'profile',
+              entity_id: targetProfileId,
+              description: `Sindicância transferida de ${currentSindicoProfile.full_name} para ${targetProfile.full_name}.`,
+              metadata: {
+                old_sindico_id: actualCurrentSindicoId,
+                new_sindico_id: targetProfileId,
+                executed_by: callerProfile.role
+              },
+            });
+          } catch(e) { console.warn('Erro log:', e); }
+        })();
+
+        await Promise.all([updateTargetAuth, updateCurrentAuth, insertLog]);
+      } catch (parallelErr) {
+        console.warn('Erro paralelo ignorado:', parallelErr);
       }
 
       return res.json({ success: true, message: 'Transferência concluída com sucesso.' });
@@ -2081,6 +2090,14 @@ export function createApiApp() {
   });
 
   // 3. Parser JSON nativo do Express
+  // Vercel Serverless Hack: Prevenir que o express.json() trave esperando um stream que já foi consumido
+  app.use((req, res, next) => {
+    if (req.body !== undefined && req.body !== null) {
+      (req as any)._body = true;
+    }
+    next();
+  });
+
   app.use(express.json());
 
   // 4. Fallback para req.body caso venha como string
