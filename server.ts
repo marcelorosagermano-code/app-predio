@@ -998,15 +998,19 @@ export function registerApiRoutes(app: express.Express) {
 
   // Transferir Sindicância
   app.post('/api/admin/transfer-sindicancia', async (req, res) => {
+    const startTime = Date.now();
+    let status = 200;
     try {
       const token = extractBearerToken(req);
       if (!token) {
-        return res.status(401).json({ success: false, error: 'Token de autenticação não fornecido.' });
+        status = 401;
+        return res.status(status).json({ success: false, error: 'Token de autenticação não fornecido.' });
       }
 
       const { supabaseUrl, supabaseServiceKey } = getSupabaseConfig();
       if (!supabaseUrl || !supabaseServiceKey) {
-        return res.status(500).json({ success: false, error: 'Configuração do Supabase ausente.' });
+        status = 500;
+        return res.status(status).json({ success: false, error: 'Configuração do Supabase ausente.' });
       }
 
       const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
@@ -1016,17 +1020,19 @@ export function registerApiRoutes(app: express.Express) {
       // 1. Identificar o usuário autenticado (1 roundtrip)
       const { data: { user: authUser }, error: authErr } = await supabaseAdmin.auth.getUser(token);
       if (authErr || !authUser) {
-        return res.status(401).json({ success: false, error: 'Sessão inválida.' });
+        status = 401;
+        return res.status(status).json({ success: false, error: 'Sessão inválida.' });
       }
 
       const body = req.body || {};
       const { targetProfileId, currentSindicoId } = body;
 
       if (!targetProfileId || typeof targetProfileId !== 'string') {
-        return res.status(400).json({ success: false, error: 'Destino não fornecido.' });
+        status = 400;
+        return res.status(status).json({ success: false, error: 'Destino não fornecido.' });
       }
 
-      // 2. Otimização Vercel: Buscar todos os perfis envolvidos em UMA única query (1 roundtrip ao invés de 3)
+      // 2. Otimização Vercel: Buscar todos os perfis envolvidos em UMA única query
       const idsToFetch = [authUser.id, targetProfileId];
       if (currentSindicoId && typeof currentSindicoId === 'string') {
         idsToFetch.push(currentSindicoId);
@@ -1038,107 +1044,100 @@ export function registerApiRoutes(app: express.Express) {
         .in('id', idsToFetch);
 
       if (profErr || !profiles) {
-        return res.status(500).json({ success: false, error: 'Erro ao consultar perfis.' });
+        status = 500;
+        return res.status(status).json({ success: false, error: 'Erro ao consultar perfis.' });
       }
 
       const callerProfile = profiles.find(p => p.id === authUser.id);
       const targetProfile = profiles.find(p => p.id === targetProfileId);
 
-      if (!callerProfile) return res.status(403).json({ success: false, error: 'Perfil não encontrado.' });
-      if (!targetProfile) return res.status(404).json({ success: false, error: 'Usuário destino não encontrado.' });
-
-      const condominiumId = callerProfile.condominium_id;
-      if (!condominiumId) return res.status(403).json({ success: false, error: 'Usuário sem condomínio vinculado.' });
-
-      if (callerProfile.role !== 'sindico' && callerProfile.role !== 'admin') {
-        return res.status(403).json({ success: false, error: 'Apenas síndicos ou administradores podem transferir a sindicância.' });
+      if (!callerProfile) {
+        status = 403;
+        return res.status(status).json({ success: false, error: 'Perfil não encontrado.' });
+      }
+      
+      if (!targetProfile) {
+        status = 404;
+        return res.status(status).json({ success: false, error: 'Usuário destino não encontrado.' });
       }
 
-      // Determinar o ID do síndico atual
+      const condominiumId = callerProfile.condominium_id;
+      if (!condominiumId) {
+        status = 403;
+        return res.status(status).json({ success: false, error: 'Usuário sem condomínio vinculado.' });
+      }
+
+      if (callerProfile.role !== 'sindico' && callerProfile.role !== 'admin') {
+        status = 403;
+        return res.status(status).json({ success: false, error: 'Apenas síndicos ou administradores podem transferir a sindicância.' });
+      }
+
+      // 3. Determinar o ID do síndico atual
       let actualCurrentSindicoId = currentSindicoId;
       if (callerProfile.role === 'sindico') {
-        actualCurrentSindicoId = callerProfile.id;
+        actualCurrentSindicoId = callerProfile.id; // Force current user as the sindico
       } else if (!actualCurrentSindicoId) {
-        return res.status(400).json({ success: false, error: 'O ID do síndico atual é obrigatório para administradores.' });
+        status = 400;
+        return res.status(status).json({ success: false, error: 'O ID do síndico atual é obrigatório para administradores.' });
       }
 
       if (targetProfileId === actualCurrentSindicoId) {
-        return res.status(400).json({ success: false, error: 'Não é possível transferir a sindicância para o próprio síndico.' });
+        status = 400;
+        return res.status(status).json({ success: false, error: 'Não é possível transferir a sindicância para o próprio síndico.' });
       }
 
       const currentSindicoProfile = profiles.find(p => p.id === actualCurrentSindicoId);
       if (!currentSindicoProfile || currentSindicoProfile.role !== 'sindico') {
-        return res.status(404).json({ success: false, error: 'O usuário atual especificado não é um síndico válido.' });
+        status = 404;
+        return res.status(status).json({ success: false, error: 'O usuário atual especificado não é um síndico válido.' });
       }
 
       if (currentSindicoProfile.condominium_id !== condominiumId && callerProfile.role !== 'admin') {
-         return res.status(403).json({ success: false, error: 'Sem permissão para alterar síndico de outro condomínio.' });
+         status = 403;
+         return res.status(status).json({ success: false, error: 'Sem permissão para alterar síndico de outro condomínio.' });
       }
 
       const targetCondominiumId = callerProfile.role === 'admin' ? currentSindicoProfile.condominium_id : condominiumId;
 
       if (targetProfile.condominium_id !== targetCondominiumId) {
-        return res.status(403).json({ success: false, error: 'O usuário destino deve pertencer ao mesmo condomínio.' });
+        status = 403;
+        return res.status(status).json({ success: false, error: 'O usuário destino deve pertencer ao mesmo condomínio.' });
       }
 
       if (targetProfile.role === 'admin') {
-        return res.status(403).json({ success: false, error: 'Não é possível transferir a sindicância para um administrador.' });
+        status = 403;
+        return res.status(status).json({ success: false, error: 'Não é possível transferir a sindicância para um administrador.' });
       }
 
       if (targetProfile.role === 'sindico') {
-        return res.status(400).json({ success: false, error: 'O usuário destino já é um síndico.' });
+        status = 400;
+        return res.status(status).json({ success: false, error: 'O usuário destino já é um síndico.' });
       }
 
-      // 3. Segurança: Verificar múltiplos síndicos (1 roundtrip leve)
-      const { count: existingSindicosCount } = await supabaseAdmin
-        .from('profiles')
-        .select('*', { count: 'exact', head: true })
-        .eq('condominium_id', targetCondominiumId)
-        .eq('role', 'sindico')
-        .neq('id', actualCurrentSindicoId);
-
-      if (existingSindicosCount && existingSindicosCount > 0) {
-        return res.status(400).json({ success: false, error: 'Inconsistência detectada: Múltiplos síndicos encontrados. Contate o suporte.' });
-      }
-
-      // 4. Executar Transferência no Banco (Profiles) via Promise.all para minimizar o tempo total na Vercel
-      const updateTargetPromise = supabaseAdmin.from('profiles').update({ role: 'sindico' }).eq('id', targetProfileId);
-      const updateCurrentPromise = supabaseAdmin.from('profiles').update({ role: 'morador' }).eq('id', actualCurrentSindicoId);
-      
-      const [targetRes, currentRes] = await Promise.all([updateTargetPromise, updateCurrentPromise]);
-
-      if (targetRes.error || currentRes.error) {
-        // Rollback best-effort caso falhe
-        await supabaseAdmin.from('profiles').update({ role: targetProfile.role }).eq('id', targetProfileId);
-        await supabaseAdmin.from('profiles').update({ role: 'sindico' }).eq('id', actualCurrentSindicoId);
-        return res.status(500).json({ success: false, error: 'Falha ao atualizar perfis. Operação revertida.' });
-      }
-
-      // 5. Inserir log sincronamente para garantir a trilha
-      await supabaseAdmin.from('activity_logs').insert({
-        condominium_id: targetCondominiumId,
-        user_id: callerProfile.id,
-        action: 'TRANSFERENCIA_SINDICANCIA',
-        entity_type: 'profile',
-        entity_id: targetProfileId,
-        description: `Sindicância transferida de ${currentSindicoProfile.full_name || 'Usuário'} para ${targetProfile.full_name || 'Usuário'}.`,
-        metadata: {
-          old_sindico_id: actualCurrentSindicoId,
-          new_sindico_id: targetProfileId,
-          executed_by: callerProfile.role
-        },
+      // 4. Executar Transferência no Banco via RPC Atômica
+      const { data: rpcData, error: rpcError } = await supabaseAdmin.rpc('transfer_sindicancia', {
+        caller_id: callerProfile.id,
+        target_profile_id: targetProfile.id,
+        current_sindico_id: actualCurrentSindicoId
       });
 
-      // 6. Atualizar Auth.users em background (Fire and Forget)
-      // REGRA: A fonte de verdade é public.profiles. Não podemos deixar o updateUserById (que é lento e frágil)
-      // causar um timeout e quebrar a transferência.
-      supabaseAdmin.auth.admin.updateUserById(targetProfileId, { user_metadata: { role: 'sindico' } }).catch(() => {});
-      supabaseAdmin.auth.admin.updateUserById(actualCurrentSindicoId, { user_metadata: { role: 'morador' } }).catch(() => {});
+      if (rpcError) {
+        console.error('Erro na RPC transfer_sindicancia:', rpcError);
+        // Map Supabase RPC errors to HTTP codes
+        status = rpcError.message?.includes('Não é possível') || rpcError.message?.includes('inválido') ? 400 : 500;
+        if (rpcError.message?.includes('permissão') || rpcError.message?.includes('pertencer ao mesmo condomínio')) status = 403;
+        
+        return res.status(status).json({ success: false, error: rpcError.message || 'Falha ao executar transferência no banco.' });
+      }
 
-      return res.json({ success: true, message: 'Transferência concluída com sucesso.' });
+      return res.status(status).json({ success: true, message: 'Transferência concluída com sucesso.' });
     } catch (err: any) {
       console.error('Erro na transferência de sindicância:', err);
-      return res.status(500).json({ success: false, error: 'Erro interno na transferência.' });
+      status = 500;
+      return res.status(status).json({ success: false, error: 'Erro interno na transferência.' });
+    } finally {
+      // 5. Logging Seguro
+      console.log(`[API] POST /api/admin/transfer-sindicancia - Status: ${status} - Duration: ${Date.now() - startTime}ms`);
     }
   });
 
