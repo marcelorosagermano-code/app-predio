@@ -321,6 +321,10 @@ export function registerApiRoutes(app: express.Express) {
         return res.status(400).json({ success: false, error: 'Número do apartamento ou identificador e senha são obrigatórios.' });
       }
 
+      if (password.length < 6) {
+        return res.status(400).json({ success: false, error: 'A senha deve conter no mínimo 6 caracteres.' });
+      }
+
       const rawInput = String(unitNumber).trim();
       const { supabaseUrl, supabaseServiceKey } = getSupabaseConfig();
 
@@ -368,7 +372,8 @@ export function registerApiRoutes(app: express.Express) {
         if (signInRes.error || !signInRes.data?.session) {
           return res.status(401).json({
             success: false,
-            error: 'E-mail ou senha incorretos. Verifique suas credenciais.',
+            code: 'INVALID_CREDENTIALS',
+            error: 'Apartamento/e-mail ou senha inválidos.',
           });
         }
 
@@ -653,24 +658,7 @@ export function registerApiRoutes(app: express.Express) {
         password: password,
       });
 
-      // Se falhou com defaultResidentEmail, tentar o email sem sufixo de condomínio ou vice-versa
-      if (signInRes.error && residentEmail.includes('@condominio.app')) {
-        const altEmail = residentEmail.includes(`.${condoShortId}@`)
-          ? `morador.ap${sanitizedNum}@condominio.app`
-          : defaultResidentEmail;
-
-        if (altEmail !== residentEmail) {
-          const altSignIn = await authClient.auth.signInWithPassword({
-            email: altEmail,
-            password: password,
-          });
-
-          if (!altSignIn.error && altSignIn.data.session) {
-            signInRes = altSignIn;
-            residentEmail = altEmail;
-          }
-        }
-      }
+      // Removido: Tentativa redundante de altEmail que causava Timeout de 10s na Vercel (brute force delay do Supabase)
 
       // Se o usuário ainda não existir no Supabase Auth e a senha informada for '000000'
       if (signInRes.error && password === '000000') {
@@ -724,10 +712,11 @@ export function registerApiRoutes(app: express.Express) {
         }
       }
 
-      if (signInRes.error || !signInRes.data.session) {
+      if (signInRes.error || !signInRes.data?.session) {
         return res.status(401).json({
           success: false,
-          error: 'Credenciais incorretas. Verifique o apartamento/login e a senha informada.',
+          code: 'INVALID_CREDENTIALS',
+          error: 'Apartamento/e-mail ou senha inválidos.',
         });
       }
 

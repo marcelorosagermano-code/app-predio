@@ -139,7 +139,17 @@ export const authService = {
         }
         return { data, error: null };
       }
+      
       apiError = parsedErr || data?.error || null;
+      
+      // Se a API backend respondeu ativamente com um erro de negócio (401, 400, 403, 409, 500), não faça fallback para o client.
+      // O fallback é EXCLUSIVO para quando a rota de backend não existe (404) ou há falha de rede.
+      if (res.status && res.status !== 404 && res.status !== 502) {
+         return {
+           data: null,
+           error: new Error(apiError || 'Apartamento/e-mail ou senha inválidos.')
+         };
+      }
     } catch (err: any) {
       apiError = err?.message || null;
     }
