@@ -50,7 +50,7 @@ interface CondominiumUserItem {
 }
 
 export const ConfiguracoesPage: React.FC = () => {
-  const { condominio, user } = useAuth();
+  const { condominio, user, refreshSession } = useAuth();
   
   const getInitialSubTab = (): 'CONDOMINIO' | 'USUARIOS' | 'PERMISSOES' | 'SUPABASE' => {
     try {
@@ -189,11 +189,11 @@ export const ConfiguracoesPage: React.FC = () => {
     setTransferError('');
 
     try {
-      const res = await authService.transferSindicancia(transferTargetId, transferSourceSindicoId);
+      const res = await authService.transferSindicancia(transferTargetId);
       if (res.success) {
         setIsTransferModalOpen(false);
-        // Force full refresh to reflect role changes and potential redirect
-        window.location.href = '/dashboard';
+        await refreshSession();
+        await loadUsers();
       } else {
         setTransferError(res.message || 'Erro ao transferir sindicância.');
       }
@@ -222,43 +222,16 @@ export const ConfiguracoesPage: React.FC = () => {
     try {
       const res = await authService.createMoradorUser(unitNumber.trim(), responsibleName.trim(), newUserRole);
       if (res.success) {
-        const cleanUnit = unitNumber.trim();
-        const cleanName = responsibleName.trim();
-        const profileId = res.data?.profileId || `usr-${Date.now()}`;
-        const userEmail =
-          res.data?.email ||
-          `morador.ap${cleanUnit.toLowerCase().replace(/[^a-z0-9]/g, '')}@condominio.app`;
-
-        const newUserItem: CondominiumUserItem = {
-          id: profileId,
-          nome: cleanName,
-          email: userEmail,
-          role: newUserRole,
-          cargo: newUserRole === 'sindico' ? 'Síndico' : newUserRole === 'conselho' ? 'Conselho Fiscal' : 'Morador',
-          ativo: true,
-          unidadeNumero: cleanUnit,
-          primeiroAcessoPendente: true,
-          criadoEm: new Date().toISOString(),
-        };
-
-        // Injeta imediatamente na lista local para exibição instantânea sem depender de F5 ou delay de rede
-        setUsersList((prev) => {
-          const filtered = prev.filter(
-            (u) => u.id !== profileId && !(u.unidadeNumero === cleanUnit && u.role === 'morador')
-          );
-          return [newUserItem, ...filtered];
-        });
-
         setCreatedUserSuccess({
-          unitNumber: res.data.unitNumber,
-          responsibleName: res.data.responsibleName,
-          initialPassword: res.data.initialPassword,
+          unitNumber: unitNumber.trim(),
+          responsibleName: responsibleName.trim(),
+          initialPassword: res.initialPassword || '000000',
         });
         setIsAddUserModalOpen(false);
         setUnitNumber('');
         setResponsibleName('');
         setNewUserRole('morador');
-        // Reconcilia com o banco Supabase em background
+        
         await loadUsers();
       } else {
         setAddUserError(res.message || 'Erro ao criar usuário.');
@@ -300,8 +273,7 @@ export const ConfiguracoesPage: React.FC = () => {
 
       const res = await authService.updateMoradorUser(
         editingUser.id,
-        updatedUnit,
-        updatedName
+        { unitNumber: updatedUnit, responsibleName: updatedName }
       );
       if (res.success) {
         // Atualiza imediatamente o item correspondente no estado da lista

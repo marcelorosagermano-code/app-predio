@@ -142,9 +142,9 @@ export const authService = {
       
       apiError = parsedErr || data?.error || null;
       
-      // Se a API backend respondeu ativamente com um erro de negócio (401, 400, 403, 409, 500), não faça fallback para o client.
-      // O fallback é EXCLUSIVO para quando a rota de backend não existe (404) ou há falha de rede.
-      if (res.status && res.status !== 404 && res.status !== 502) {
+      // Se a API backend respondeu ativamente com um erro de negócio (401, 400, 403, 409), não faça fallback para o client.
+      // O fallback é EXCLUSIVO para quando a rota de backend não existe (404) ou há falha de infraestrutura (500, 502, 504).
+      if (res.status && res.status >= 400 && res.status < 500 && res.status !== 404) {
          return {
            data: null,
            error: new Error(apiError || 'Apartamento/e-mail ou senha inválidos.')
@@ -658,231 +658,12 @@ export const authService = {
   /**
    * Cria acesso de morador através de endpoint server-side administrativo
    */
-  async createMoradorUser(unitNumber: string, responsibleName: string, role: string = 'morador'): Promise<{
-    success: boolean;
-    message: string;
-    data: { unitNumber: string; responsibleName: string; initialPassword: string; profileId: string; email?: string };
-  }> {
-    const cleanUnit = unitNumber.trim().replace(/^(apartamento|apto\.?|ap\.?|unidade)\s*/i, '').trim();
-    const cleanName = responsibleName.trim();
 
-    const session = await this.getValidSession();
+  // =========================================================
+  // ================ RECONSTRUÇÃO: USUÁRIOS =================
+  // =========================================================
 
-    if (!session?.access_token) {
-      throw new Error('Sessão expirada ou não autenticada. Por favor, faça login novamente para continuar.');
-    }
-
-    // 1. Tentar criar via endpoint server-side /api/admin/create-morador-user com auto-refresh
-    let serverFailed = false;
-    let serverErrorMsg = '';
-    try {
-      const resp = await this.fetchWithAuth('/api/admin/create-morador-user', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          unitNumber: cleanUnit,
-          responsibleName: cleanName,
-          role,
-        }),
-      });
-
-      const parsed = await parseApiResponse(resp);
-      if (parsed.ok && parsed.data?.success) {
-        return parsed.data;
-      }
-      // Se o servidor respondeu com erro de regra de negócio (ex: 400 duplicidade, 403 não autorizado)
-      if (!resp.ok && resp.status >= 400 && resp.status < 500 && resp.status !== 404) {
-        return {
-          success: false,
-          message: parsed.data?.error || parsed.error || 'Operação não permitida pelo servidor.',
-          data: null as any,
-        };
-      }
-      serverFailed = true;
-      serverErrorMsg = parsed.data?.error || parsed.error || 'Falha no endpoint do servidor';
-    } catch (netErr: any) {
-      serverFailed = true;
-      serverErrorMsg = netErr?.message || 'Falha de conexão com o servidor';
-    }
-
-    // 2. Fallback resiliente: criação direta via Supabase client (apenas se o endpoint serverless não responder)
-    try {
-      let condoId = _cachedProfile?.condominiumId;
-      if (!condoId) {
-        const { data: p } = await supabase.from('profiles').select('condominium_id').eq('id', session.user.id).maybeSingle();
-        condoId = p?.condominium_id;
-      }
-      if (!condoId) {
-        throw new Error('Administrador não possui condomínio vinculado.');
-      }
-      const condoShortId = condoId.slice(0, 8);
-      const residentEmail = `morador.ap${cleanUnit.toLowerCase().replace(/[^a-z0-9]/g, '')}.${condoShortId}@condominio.app`;
-
-      // 2.1 Garantir existência da unidade
-      let unitId: string | null = null;
-      const { data: existingUnit } = await supabase
-        .from('units')
-        .select('id, unit_number')
-        .eq('condominium_id', condoId)
-        .eq('unit_number', cleanUnit)
-        .maybeSingle();
-
-      if (existingUnit) {
-        unitId = existingUnit.id;
-      } else {
-        const { data: newUnit, error: unitErr } = await supabase
-          .from('units')
-          .insert({
-            condominium_id: condoId,
-            unit_number: cleanUnit,
-            status: 'occupied',
-          })
-          .select('id')
-          .single();
-
-        if (unitErr) {
-          const { data: retryUnit } = await supabase
-            .from('units')
-            .select('id')
-            .eq('condominium_id', condoId)
-            .eq('unit_number', cleanUnit)
-            .maybeSingle();
-          unitId = retryUnit?.id || null;
-        } else {
-          unitId = newUnit?.id || null;
-        }
-      }
-
-      if (!unitId) {
-        throw new Error('Não foi possível identificar ou criar a unidade.');
-      }
-
-      // 2.2 Tentar criar o usuário no Supabase Auth via cliente ISOLADO
-      // CRÍTICO: Nunca usar o cliente global `supabase` aqui, pois o signUp sobrescreveria a sessão do admin no navegador!
-      let profileId: string | null = null;
-      try {
-        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-        const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
-        if (supabaseUrl && supabaseAnonKey) {
-          const isolatedSupabase = createClient(supabaseUrl, supabaseAnonKey, {
-            auth: {
-              persistSession: false,
-              autoRefreshToken: false,
-              detectSessionInUrl: false,
-              storageKey: `isolated_morador_creation_${Date.now()}_${Math.random()}`,
-              flowType: 'pkce',
-              storage: {
-                getItem: () => null,
-                setItem: () => {},
-                removeItem: () => {},
-              },
-            },
-          });
-
-          const { data: signUpData, error: signUpErr } = await isolatedSupabase.auth.signUp({
-            email: residentEmail,
-            password: '000000',
-            options: {
-              data: {
-                full_name: cleanName,
-                role: 'morador',
-                unit_id: unitId,
-                unit_number: cleanUnit,
-                condominium_id: condoId,
-                must_change_password: true,
-                first_access_completed: false,
-              },
-            },
-          });
-
-          if (signUpData?.user?.id) {
-            profileId = signUpData.user.id;
-          }
-          if (signUpErr) {
-            console.warn('Aviso no signUp isolado do morador:', signUpErr.message);
-          }
-        }
-      } catch (authErr) {
-        console.warn('SignUp morador fallback aviso:', authErr);
-      }
-
-      // 2.3 Se não obteve profileId via signUp (ex: já cadastrado no Auth), buscar em profiles
-      if (!profileId) {
-        const { data: existingProf } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('email', residentEmail)
-          .maybeSingle();
-
-        if (existingProf?.id) {
-          profileId = existingProf.id;
-        } else {
-          profileId = crypto.randomUUID();
-        }
-      }
-
-      // 2.4 Salvar/Atualizar perfil do morador
-      await supabase.from('profiles').upsert({
-        id: profileId,
-        condominium_id: condoId,
-        full_name: cleanName,
-        email: residentEmail,
-        role: 'morador',
-        is_active: true,
-        updated_at: new Date().toISOString(),
-      });
-
-      // 2.5 Vincular o morador à unidade em unit_residents
-      await supabase.from('unit_residents').delete().or(`unit_id.eq.${unitId},profile_id.eq.${profileId}`);
-      await supabase.from('unit_residents').insert({
-        unit_id: unitId,
-        profile_id: profileId,
-        name: cleanName,
-        email: residentEmail,
-        relationship_type: 'tenant',
-        is_primary: true,
-      });
-
-      // 2.6 Registrar log de auditoria
-      try {
-        await supabase.from('activity_logs').insert({
-          condominium_id: condoId,
-          user_id: session.user.id,
-          action: 'CREATE',
-          entity_type: 'user',
-          entity_id: profileId,
-          description: `Usuário morador criado para a Unidade ${cleanUnit} (${cleanName}). Senha inicial 000000.`,
-          metadata: {
-            unit_number: cleanUnit,
-            responsible_name: cleanName,
-            role: 'morador',
-          },
-        });
-      } catch {}
-
-      return {
-        success: true,
-        message: 'Usuário morador criado com sucesso.',
-        data: {
-          unitNumber: cleanUnit,
-          responsibleName: cleanName,
-          initialPassword: '000000',
-          profileId: profileId!,
-          email: residentEmail,
-        },
-      };
-    } catch (fallbackErr: any) {
-      console.error('Erro no fallback de criação de morador:', fallbackErr);
-      throw new Error(serverErrorMsg || fallbackErr?.message || 'Erro ao criar usuário morador.');
-    }
-  },
-
-  /**
-   * Lista os usuários reais cadastrados no condomínio
-   */
-  async listCondominiumUsers(): Promise<Array<{
+  listCondominiumUsers: async function(): Promise<Array<{
     id: string;
     nome: string;
     email: string;
@@ -893,423 +674,92 @@ export const authService = {
     primeiroAcessoPendente: boolean;
     criadoEm: string;
   }>> {
-    const session = await this.getValidSession();
-
-    if (!session?.access_token) {
+    try {
+      const resp = await this.fetchWithAuth('/api/admin/users', { method: 'GET' });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.success && data.users) {
+          return data.users;
+        }
+      }
+      return [];
+    } catch (err) {
+      console.error('Erro ao listar usuários:', err);
       return [];
     }
-
-    // 1. Tentar buscar via endpoint server-side /api/admin/list-users com auto-refresh e sem cache HTTP
-    try {
-      const resp = await this.fetchWithAuth('/api/admin/list-users', {
-        headers: {
-          'Cache-Control': 'no-cache, no-store, must-revalidate',
-          Pragma: 'no-cache',
-        },
-        cache: 'no-store',
-      });
-
-      if (resp.ok) {
-        const resJson = await resp.json();
-        if (resJson.success && Array.isArray(resJson.users)) {
-          return resJson.users;
-        }
-      }
-    } catch {
-      // Falha de rede ou endpoint serverless ausente; prossegue para consulta direta
-    }
-
-    // 2. Consulta direta via Supabase client (apenas se endpoint falhar)
-    try {
-      let condoId = _cachedProfile?.condominiumId;
-      if (!condoId) {
-        const { data: p } = await supabase.from('profiles').select('condominium_id').eq('id', session.user.id).maybeSingle();
-        condoId = p?.condominium_id;
-      }
-      if (!condoId) return [];
-
-      // 2.1 Buscar todos os profiles vinculados ao condomínio do administrador
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('condominium_id', condoId)
-        .neq('is_active', false)
-        .order('created_at', { ascending: false });
-
-      // 2.2 Buscar todas as unidades do condomínio com seus respectivos moradores vinculados
-      const { data: units } = await supabase
-        .from('units')
-        .select('id, unit_number, block, unit_residents(id, profile_id, name, email, relationship_type, is_primary, created_at)')
-        .eq('condominium_id', condoId);
-
-      const residentsMap: Array<{
-        profileId?: string;
-        name: string;
-        email: string;
-        unitNumber: string;
-        createdAt?: string;
-      }> = [];
-
-      if (units) {
-        for (const u of units) {
-          if (Array.isArray(u.unit_residents)) {
-            for (const r of u.unit_residents) {
-              residentsMap.push({
-                profileId: r.profile_id || undefined,
-                name: r.name,
-                email: r.email,
-                unitNumber: u.unit_number,
-                createdAt: (r as any).created_at,
-              });
-            }
-          }
-        }
-      }
-
-      const mappedList: Array<{
-        id: string;
-        nome: string;
-        email: string;
-        role: string;
-        cargo: string;
-        ativo: boolean;
-        unidadeNumero: string | null;
-        primeiroAcessoPendente: boolean;
-        criadoEm: string;
-      }> = [];
-
-      // Mapear perfis retornados
-      if (profiles && profiles.length > 0) {
-        for (const p of profiles) {
-          let resInfo = residentsMap.find((r) => r.profileId === p.id);
-          if (!resInfo && p.email) {
-            resInfo = residentsMap.find((r) => r.email && r.email.toLowerCase() === p.email.toLowerCase());
-          }
-          let unitNumber = resInfo?.unitNumber || null;
-          if (!unitNumber && p.email?.includes('morador.ap')) {
-            const match = p.email.match(/morador\.ap([a-z0-9]+)\./i);
-            if (match && match[1]) {
-              unitNumber = match[1].toUpperCase();
-            }
-          }
-
-          mappedList.push({
-            id: p.id,
-            nome: p.full_name || p.email,
-            email: p.email,
-            role: p.role,
-            cargo: p.role === 'admin' ? 'Administrador' : p.role === 'sindico' ? 'Síndico' : 'Morador',
-            ativo: p.is_active,
-            unidadeNumero: unitNumber,
-            primeiroAcessoPendente: p.role === 'morador',
-            criadoEm: p.created_at || new Date().toISOString(),
-          });
-        }
-      }
-
-      // 2.3 Garantir que qualquer morador vinculado a unidade que não esteja nos perfis seja incluído
-      for (const res of residentsMap) {
-        if (!mappedList.some((m) => (res.profileId && m.id === res.profileId) || (res.email && m.email.toLowerCase() === res.email.toLowerCase()))) {
-          mappedList.push({
-            id: res.profileId || `res-${res.unitNumber}`,
-            nome: res.name || res.email,
-            email: res.email,
-            role: 'morador',
-            cargo: 'Morador',
-            ativo: true,
-            unidadeNumero: res.unitNumber,
-            primeiroAcessoPendente: true,
-            criadoEm: res.createdAt || new Date().toISOString(),
-          });
-        }
-      }
-
-      if (mappedList.length > 0) {
-        return mappedList;
-      }
-    } catch (directErr) {
-      console.warn('Consulta direta a profiles falhou:', directErr);
-    }
-
-    // 3. Se nenhuma consulta retornou, retornar os dados reais do usuário logado (nunca mock data)
-    return [
-      {
-        id: session.user.id,
-        nome: session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || 'Administrador',
-        email: session.user.email || '',
-        role: (session.user.user_metadata?.role as string) || 'admin',
-        cargo: 'Administrador',
-        ativo: true,
-        unidadeNumero: null,
-        primeiroAcessoPendente: false,
-        criadoEm: session.user.created_at || new Date().toISOString(),
-      },
-    ];
   },
 
-  /**
-   * Atualiza os dados de acesso do morador (unidade e/ou responsável)
-   */
-  async updateMoradorUser(
-    profileId: string,
-    unitNumber: string,
-    responsibleName: string
-  ): Promise<{
+  createMoradorUser: async function(unitNumber: string, responsibleName: string, role: string = 'morador'): Promise<{
     success: boolean;
-    message: string;
-    data: { profileId: string; unitNumber: string; responsibleName: string };
+    message?: string;
+    initialPassword?: string;
   }> {
-    const cleanUnit = unitNumber.trim().replace(/^(apartamento|apto\.?|ap\.?|unidade)\s*/i, '').trim();
-    const cleanName = responsibleName.trim();
-
-    const session = await this.getValidSession();
-    if (!session?.access_token) {
-      throw new Error('Sessão expirada ou não autenticada. Por favor, faça login novamente para continuar.');
-    }
-
-    // 1. Tentar via endpoint server-side /api/admin/update-morador-user com auto-refresh
-    let serverFailed = false;
-    let serverErrorMsg = '';
     try {
-      const resp = await this.fetchWithAuth('/api/admin/update-morador-user', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          profileId,
-          unitNumber: cleanUnit,
-          responsibleName: cleanName,
-        }),
+      const resp = await this.fetchWithAuth('/api/admin/users', {
+        method: 'POST',
+        body: JSON.stringify({ unitNumber, responsibleName, role }),
+        headers: { 'Content-Type': 'application/json' }
       });
-
-      const parsed = await parseApiResponse(resp);
-      if (parsed.ok && parsed.data?.success) {
-        return parsed.data;
+      const data = await parseApiResponse(resp);
+      if (data.ok && data.data?.success) {
+        return { success: true, message: data.data.message, initialPassword: data.data.initialPassword };
       }
-      if (!resp.ok && resp.status >= 400 && resp.status < 500 && resp.status !== 404) {
-        return {
-          success: false,
-          message: parsed.data?.error || parsed.error || 'Operação não permitida pelo servidor.',
-          data: null as any,
-        };
-      }
-      serverFailed = true;
-      serverErrorMsg = parsed.data?.error || parsed.error || 'Falha no endpoint do servidor';
-    } catch (netErr: any) {
-      serverFailed = true;
-      serverErrorMsg = netErr?.message || 'Falha de conexão com o servidor';
-    }
-
-    // 2. Fallback resiliente: atualização direta via Supabase client
-    try {
-      let condoId = _cachedProfile?.condominiumId;
-      if (!condoId) {
-        const { data: p } = await supabase.from('profiles').select('condominium_id').eq('id', session.user.id).maybeSingle();
-        condoId = p?.condominium_id;
-      }
-      if (!condoId) {
-        throw new Error('Administrador não possui condomínio vinculado.');
-      }
-
-      // 2.1 Atualizar perfil
-      await supabase
-        .from('profiles')
-        .update({
-          full_name: cleanName,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', profileId);
-
-      // 2.2 Garantir unidade
-      let unitId: string | null = null;
-      const { data: existingUnit } = await supabase
-        .from('units')
-        .select('id')
-        .eq('condominium_id', condoId)
-        .eq('unit_number', cleanUnit)
-        .maybeSingle();
-
-      if (existingUnit) {
-        unitId = existingUnit.id;
-      } else {
-        const { data: newUnit } = await supabase
-          .from('units')
-          .insert({
-            condominium_id: condoId,
-            unit_number: cleanUnit,
-            status: 'occupied',
-          })
-          .select('id')
-          .single();
-        unitId = newUnit?.id || null;
-      }
-
-      if (unitId) {
-        await supabase
-          .from('unit_residents')
-          .update({
-            name: cleanName,
-            unit_id: unitId,
-          })
-          .eq('profile_id', profileId);
-      }
-
-      // 2.3 Log de auditoria
-      try {
-        await supabase.from('activity_logs').insert({
-          condominium_id: condoId,
-          user_id: session.user.id,
-          action: 'UPDATE',
-          entity_type: 'user',
-          entity_id: profileId,
-          description: `Dados do morador ${cleanName} atualizados para Unidade ${cleanUnit}.`,
-          metadata: { unit_number: cleanUnit, responsible_name: cleanName },
-        });
-      } catch {}
-
-      return {
-        success: true,
-        message: 'Usuário atualizado com sucesso.',
-        data: {
-          profileId,
-          unitNumber: cleanUnit,
-          responsibleName: cleanName,
-        },
-      };
-    } catch (fallbackErr: any) {
-      console.error('Erro no fallback de atualização de morador:', fallbackErr);
-      throw new Error(serverErrorMsg || fallbackErr?.message || 'Erro ao atualizar usuário morador.');
+      return { success: false, message: data.data?.error || data.error || 'Erro ao criar usuário.' };
+    } catch (err: any) {
+      return { success: false, message: err?.message || 'Erro de rede.' };
     }
   },
 
-  /**
-   * Exclui / desativa o acesso de um morador
-   */
-
-  /**
-   * Transfere a sindicância do usuário atual para outro usuário elegível no mesmo condomínio.
-   * Utiliza o endpoint server-side para segurança e atomicidade.
-   */
-  async transferSindicancia(targetProfileId: string, currentSindicoId?: string): Promise<{ success: boolean; message: string }> {
-    const session = await this.getValidSession();
-    if (!session?.access_token) {
-      throw new Error('Sessão expirada ou não autenticada. Por favor, faça login novamente para continuar.');
+  updateMoradorUser: async function(
+    profileId: string,
+    updates: { unitNumber?: string; responsibleName?: string; role?: string; isActive?: boolean }
+  ): Promise<{ success: boolean; message: string }> {
+    try {
+      const resp = await this.fetchWithAuth(`/api/admin/users/${profileId}`, {
+        method: 'PUT',
+        body: JSON.stringify(updates),
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await parseApiResponse(resp);
+      if (data.ok && data.data?.success) {
+        return { success: true, message: data.data.message };
+      }
+      return { success: false, message: data.data?.error || data.error || 'Erro ao atualizar usuário.' };
+    } catch (err: any) {
+      return { success: false, message: err?.message || 'Erro de rede.' };
     }
+  },
 
+  deleteMoradorUser: async function(profileId: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const resp = await this.fetchWithAuth(`/api/admin/users/${profileId}`, {
+        method: 'DELETE',
+      });
+      const data = await parseApiResponse(resp);
+      if (data.ok && data.data?.success) {
+        return { success: true, message: data.data.message };
+      }
+      return { success: false, message: data.data?.error || data.error || 'Erro ao excluir usuário.' };
+    } catch (err: any) {
+      return { success: false, message: err?.message || 'Erro de rede.' };
+    }
+  },
+
+  transferSindicancia: async function(targetProfileId: string): Promise<{ success: boolean; message: string }> {
     try {
       const resp = await this.fetchWithAuth('/api/admin/transfer-sindicancia', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          targetProfileId,
-          currentSindicoId,
-        }),
+        body: JSON.stringify({ targetProfileId }),
+        headers: { 'Content-Type': 'application/json' }
       });
-
-      const parsed = await parseApiResponse(resp);
-
-      if (parsed.ok) {
-        return { success: true, message: (parsed.data as any)?.message || 'Transferência concluída com sucesso.' };
+      const data = await parseApiResponse(resp);
+      if (data.ok && data.data?.success) {
+        return { success: true, message: data.data.message };
       }
-
-      return { success: false, message: parsed.error || 'Erro ao transferir sindicância.' };
+      return { success: false, message: data.data?.error || data.error || 'Erro ao transferir sindicância.' };
     } catch (err: any) {
-      console.error('Erro na requisição transferSindicancia:', err);
-      return { success: false, message: err?.message || 'Erro inesperado na transferência de sindicância.' };
+      return { success: false, message: err?.message || 'Erro de rede.' };
     }
-  },
-
-  async deleteMoradorUser(profileId: string): Promise<{ success: boolean; message: string }> {
-    const session = await this.getValidSession();
-    if (!session?.access_token) {
-      throw new Error('Sessão expirada ou não autenticada. Por favor, faça login novamente para continuar.');
-    }
-
-    // 1. Tentar via endpoint server-side /api/admin/delete-morador-user com auto-refresh
-    let serverFailed = false;
-    let serverErrorMsg = '';
-    try {
-      const resp = await this.fetchWithAuth('/api/admin/delete-morador-user', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          profileId,
-        }),
-      });
-
-      const parsed = await parseApiResponse(resp);
-      if (parsed.ok && parsed.data?.success) {
-        return parsed.data;
-      }
-      if (!resp.ok && resp.status >= 400 && resp.status < 500 && resp.status !== 404) {
-        return {
-          success: false,
-          message: parsed.data?.error || parsed.error || 'Operação não permitida pelo servidor.',
-        };
-      }
-      serverFailed = true;
-      serverErrorMsg = parsed.data?.error || parsed.error || 'Falha no endpoint do servidor';
-    } catch (netErr: any) {
-      serverFailed = true;
-      serverErrorMsg = netErr?.message || 'Falha de conexão com o servidor';
-    }
-
-    // 2. Fallback resiliente: desativação direta via Supabase client
-    try {
-      let condoId = _cachedProfile?.condominiumId;
-      if (!condoId) {
-        const { data: p } = await supabase.from('profiles').select('condominium_id').eq('id', session.user.id).maybeSingle();
-        condoId = p?.condominium_id;
-      }
-      if (!condoId) {
-        throw new Error('Administrador não possui condomínio vinculado.');
-      }
-
-      // 2.1 Desvincular de unit_residents
-      await supabase.from('unit_residents').delete().eq('profile_id', profileId);
-
-      // 2.2 Excluir de profiles (ou marcar inativo se houver restrição de integridade referencial)
-      const { error: delProfErr } = await supabase
-        .from('profiles')
-        .delete()
-        .eq('id', profileId);
-
-      if (delProfErr) {
-        console.warn('Aviso ao deletar profiles, aplicando is_active: false:', delProfErr);
-        await supabase
-          .from('profiles')
-          .update({
-            is_active: false,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', profileId);
-      }
-
-      // 2.3 Registrar log de auditoria
-      try {
-        await supabase.from('activity_logs').insert({
-          condominium_id: condoId,
-          user_id: session.user.id,
-          action: 'DELETE',
-          entity_type: 'user',
-          entity_id: profileId,
-          description: `Acesso do usuário morador excluído/desativado.`,
-          metadata: { profile_id: profileId },
-        });
-      } catch {}
-
-      return {
-        success: true,
-        message: 'Usuário excluído com sucesso.',
-      };
-    } catch (fallbackErr: any) {
-      console.error('Erro no fallback de exclusão de morador:', fallbackErr);
-      throw new Error(serverErrorMsg || fallbackErr?.message || 'Erro ao excluir usuário morador.');
-    }
-  },
+  }
 };
+

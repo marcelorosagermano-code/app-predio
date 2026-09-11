@@ -1,0 +1,962 @@
+   989	  app.post('/api/admin/transfer-sindicancia', async (req, res) => {
+   990	    const startTime = Date.now();
+   991	    let status = 200;
+   992	    try {
+   993	      const token = extractBearerToken(req);
+   994	      if (!token) {
+   995	        status = 401;
+   996	        return res.status(status).json({ success: false, error: 'Token de autenticação não fornecido.' });
+   997	      }
+   998	
+   999	      const { supabaseUrl, supabaseServiceKey } = getSupabaseConfig();
+  1000	      if (!supabaseUrl || !supabaseServiceKey) {
+  1001	        status = 500;
+  1002	        return res.status(status).json({ success: false, error: 'Configuração do Supabase ausente.' });
+  1003	      }
+  1004	
+  1005	      const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+  1006	        auth: { persistSession: false },
+  1007	      });
+  1008	
+  1009	      // 1. Identificar o usuário autenticado (1 roundtrip)
+  1010	      const { data: { user: authUser }, error: authErr } = await supabaseAdmin.auth.getUser(token);
+  1011	      if (authErr || !authUser) {
+  1012	        status = 401;
+  1013	        return res.status(status).json({ success: false, error: 'Sessão inválida.' });
+  1014	      }
+  1015	
+  1016	      const body = req.body || {};
+  1017	      const { targetProfileId, currentSindicoId } = body;
+  1018	
+  1019	      if (!targetProfileId || typeof targetProfileId !== 'string') {
+  1020	        status = 400;
+  1021	        return res.status(status).json({ success: false, error: 'Destino não fornecido.' });
+  1022	      }
+  1023	
+  1024	      // 2. Otimização Vercel: Buscar todos os perfis envolvidos em UMA única query
+  1025	      const idsToFetch = [authUser.id, targetProfileId];
+  1026	      if (currentSindicoId && typeof currentSindicoId === 'string') {
+  1027	        idsToFetch.push(currentSindicoId);
+  1028	      }
+  1029	
+  1030	      const { data: profiles, error: profErr } = await supabaseAdmin
+  1031	        .from('profiles')
+  1032	        .select('*')
+  1033	        .in('id', idsToFetch);
+  1034	
+  1035	      if (profErr || !profiles) {
+  1036	        status = 500;
+  1037	        return res.status(status).json({ success: false, error: 'Erro ao consultar perfis.' });
+  1038	      }
+  1039	
+  1040	      const callerProfile = profiles.find(p => p.id === authUser.id);
+  1041	      const targetProfile = profiles.find(p => p.id === targetProfileId);
+  1042	
+  1043	      if (!callerProfile) {
+  1044	        status = 403;
+  1045	        return res.status(status).json({ success: false, error: 'Perfil não encontrado.' });
+  1046	      }
+  1047	      
+  1048	      if (!targetProfile) {
+  1049	        status = 404;
+  1050	        return res.status(status).json({ success: false, error: 'Usuário destino não encontrado.' });
+  1051	      }
+  1052	
+  1053	      const condominiumId = callerProfile.condominium_id;
+  1054	      if (!condominiumId) {
+  1055	        status = 403;
+  1056	        return res.status(status).json({ success: false, error: 'Usuário sem condomínio vinculado.' });
+  1057	      }
+  1058	
+  1059	      if (callerProfile.role !== 'sindico' && callerProfile.role !== 'admin') {
+  1060	        status = 403;
+  1061	        return res.status(status).json({ success: false, error: 'Apenas síndicos ou administradores podem transferir a sindicância.' });
+  1062	      }
+  1063	
+  1064	      // 3. Determinar o ID do síndico atual
+  1065	      let actualCurrentSindicoId = currentSindicoId;
+  1066	      if (callerProfile.role === 'sindico') {
+  1067	        actualCurrentSindicoId = callerProfile.id; // Force current user as the sindico
+  1068	      } else if (!actualCurrentSindicoId) {
+  1069	        status = 400;
+  1070	        return res.status(status).json({ success: false, error: 'O ID do síndico atual é obrigatório para administradores.' });
+  1071	      }
+  1072	
+  1073	      if (targetProfileId === actualCurrentSindicoId) {
+  1074	        status = 400;
+  1075	        return res.status(status).json({ success: false, error: 'Não é possível transferir a sindicância para o próprio síndico.' });
+  1076	      }
+  1077	
+  1078	      const currentSindicoProfile = profiles.find(p => p.id === actualCurrentSindicoId);
+  1079	      if (!currentSindicoProfile || currentSindicoProfile.role !== 'sindico') {
+  1080	        status = 404;
+  1081	        return res.status(status).json({ success: false, error: 'O usuário atual especificado não é um síndico válido.' });
+  1082	      }
+  1083	
+  1084	      if (currentSindicoProfile.condominium_id !== condominiumId && callerProfile.role !== 'admin') {
+  1085	         status = 403;
+  1086	         return res.status(status).json({ success: false, error: 'Sem permissão para alterar síndico de outro condomínio.' });
+  1087	      }
+  1088	
+  1089	      const targetCondominiumId = callerProfile.role === 'admin' ? currentSindicoProfile.condominium_id : condominiumId;
+  1090	
+  1091	      if (targetProfile.condominium_id !== targetCondominiumId) {
+  1092	        status = 403;
+  1093	        return res.status(status).json({ success: false, error: 'O usuário destino deve pertencer ao mesmo condomínio.' });
+  1094	      }
+  1095	
+  1096	      if (targetProfile.role === 'admin') {
+  1097	        status = 403;
+  1098	        return res.status(status).json({ success: false, error: 'Não é possível transferir a sindicância para um administrador.' });
+  1099	      }
+  1100	
+  1101	      if (targetProfile.role === 'sindico') {
+  1102	        status = 400;
+  1103	        return res.status(status).json({ success: false, error: 'O usuário destino já é um síndico.' });
+  1104	      }
+  1105	
+  1106	      // 4. Executar Transferência no Banco via RPC Atômica
+  1107	      const { data: rpcData, error: rpcError } = await supabaseAdmin.rpc('transfer_sindicancia', {
+  1108	        caller_id: callerProfile.id,
+  1109	        target_profile_id: targetProfile.id,
+  1110	        current_sindico_id: actualCurrentSindicoId
+  1111	      });
+  1112	
+  1113	      if (rpcError) {
+  1114	        console.error('Erro na RPC transfer_sindicancia:', rpcError);
+  1115	        // Map Supabase RPC errors to HTTP codes
+  1116	        status = rpcError.message?.includes('Não é possível') || rpcError.message?.includes('inválido') ? 400 : 500;
+  1117	        if (rpcError.message?.includes('permissão') || rpcError.message?.includes('pertencer ao mesmo condomínio')) status = 403;
+  1118	        
+  1119	        return res.status(status).json({ success: false, error: rpcError.message || 'Falha ao executar transferência no banco.' });
+  1120	      }
+  1121	
+  1122	      return res.status(status).json({ success: true, message: 'Transferência concluída com sucesso.' });
+  1123	    } catch (err: any) {
+  1124	      console.error('Erro na transferência de sindicância:', err);
+  1125	      status = 500;
+  1126	      return res.status(status).json({ success: false, error: 'Erro interno na transferência.' });
+  1127	    } finally {
+  1128	      // 5. Logging Seguro
+  1129	      console.log(`[API] POST /api/admin/transfer-sindicancia - Status: ${status} - Duration: ${Date.now() - startTime}ms`);
+  1130	    }
+  1131	  });
+  1132	
+  1133	  app.post('/api/admin/create-morador-user', async (req, res) => {
+  1134	    try {
+  1135	      const token = extractBearerToken(req);
+  1136	      if (!token) {
+  1137	        return res.status(401).json({ success: false, error: 'Token de autenticação não fornecido ou inválido.' });
+  1138	      }
+  1139	
+  1140	      const { supabaseUrl, supabaseServiceKey } = getSupabaseConfig();
+  1141	      if (!supabaseUrl || !supabaseServiceKey) {
+  1142	        return res.status(500).json({ success: false, error: 'Configuração do Supabase ausente no servidor.' });
+  1143	      }
+  1144	
+  1145	      const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+  1146	        auth: { persistSession: false },
+  1147	      });
+  1148	
+  1149	      // 1. Validar administrador autenticado
+  1150	      const { data: { user: adminAuthUser }, error: authErr } = await supabaseAdmin.auth.getUser(token);
+  1151	      if (authErr || !adminAuthUser) {
+  1152	        console.warn('Falha na validação do token admin em ' + req.path + ':', authErr?.message);
+  1153	        return res.status(401).json({ success: false, error: 'Sessão administrativa inválida ou expirada.' });
+  1154	      }
+  1155	
+  1156	      const { data: adminProfile } = await supabaseAdmin
+  1157	        .from('profiles')
+  1158	        .select('*')
+  1159	        .eq('id', adminAuthUser.id)
+  1160	        .maybeSingle();
+  1161	
+  1162	      if (!adminProfile) {
+  1163	        return res.status(403).json({ success: false, error: 'Perfil administrativo não encontrado em public.profiles.' });
+  1164	      }
+  1165	
+  1166	      const userRole = adminProfile.role;
+  1167	      const condominiumId = adminProfile.condominium_id;
+  1168	
+  1169	      if (userRole !== 'admin' && userRole !== 'sindico') {
+  1170	        return res.status(403).json({ success: false, error: 'Acesso negado: permissão administrativa necessária.' });
+  1171	      }
+  1172	
+  1173	      if (!condominiumId) {
+  1174	        return res.status(403).json({ success: false, error: 'Acesso negado: administrador não vinculado a um condomínio válido.' });
+  1175	      }
+  1176	
+  1177	      // 2. Validação dos dados recebidos
+  1178	      // SEGURANÇA: Validar rigorosamente a role solicitada. O condominium_id SEMPRE será o do admin.
+  1179	      const body = req.body || {};
+  1180	      const { unitNumber, responsibleName, role: requestedRoleFromClient } = body;
+  1181	      
+  1182	      let requestedRole = requestedRoleFromClient || 'morador';
+  1183	      
+  1184	      // Validação da hierarquia
+  1185	      if (requestedRole === 'admin') {
+  1186	        return res.status(403).json({ success: false, error: 'Acesso negado: Não é possível criar perfil de administrador por esta interface.' });
+  1187	      }
+  1188	      if (requestedRole === 'sindico' && userRole !== 'admin') {
+  1189	        return res.status(403).json({ success: false, error: 'Acesso negado: Apenas administradores podem cadastrar síndicos.' });
+  1190	      }
+  1191	      if (!['morador', 'sindico', 'conselho'].includes(requestedRole)) {
+  1192	        requestedRole = 'morador';
+  1193	      }
+  1194	
+  1195	      if (!unitNumber || typeof unitNumber !== 'string' || !unitNumber.trim()) {
+  1196	        return res.status(400).json({ success: false, error: 'Por favor, informe o número do apartamento/unidade.' });
+  1197	      }
+  1198	
+  1199	      if (!responsibleName || typeof responsibleName !== 'string' || !responsibleName.trim()) {
+  1200	        return res.status(400).json({ success: false, error: 'Por favor, informe o nome do responsável pela unidade.' });
+  1201	      }
+  1202	
+  1203	      const cleanUnitNumber = unitNumber.trim();
+  1204	      const cleanResponsibleName = responsibleName.trim();
+  1205	
+  1206	      // 3. Localizar unidade dentro do condomínio do administrador
+  1207	      let { data: unit, error: unitLookupErr } = await supabaseAdmin
+  1208	        .from('units')
+  1209	        .select('*')
+  1210	        .eq('condominium_id', condominiumId)
+  1211	        .ilike('unit_number', cleanUnitNumber)
+  1212	        .maybeSingle();
+  1213	
+  1214	      if (unitLookupErr) {
+  1215	        return res.status(500).json({ success: false, error: `Erro ao buscar unidade: ${unitLookupErr.message}` });
+  1216	      }
+  1217	
+  1218	      // PASSO 3 — Se a unidade NÃO existir: criar automaticamente no condomínio do administrador
+  1219	      if (!unit) {
+  1220	        const { data: newUnit, error: createUnitErr } = await supabaseAdmin
+  1221	          .from('units')
+  1222	          .insert({
+  1223	            condominium_id: condominiumId,
+  1224	            unit_number: cleanUnitNumber,
+  1225	            status: 'occupied',
+  1226	          })
+  1227	          .select()
+  1228	          .single();
+  1229	
+  1230	        if (createUnitErr || !newUnit) {
+  1231	          return res.status(500).json({
+  1232	            success: false,
+  1233	            error: `Erro ao criar unidade automaticamente: ${createUnitErr?.message || 'Falha na criação da unidade'}`,
+  1234	          });
+  1235	        }
+  1236	
+  1237	        unit = newUnit;
+  1238	      }
+  1239	
+  1240	      // 4. Verificar se a unidade já possui um usuário morador ativo
+  1241	      const { data: existingResidents } = await supabaseAdmin
+  1242	        .from('unit_residents')
+  1243	        .select('*, profiles(*)')
+  1244	        .eq('unit_id', unit.id);
+  1245	
+  1246	      const activeResident = existingResidents?.find(
+  1247	        (r) =>
+  1248	          (r.profile_id && r.profiles && r.profiles.is_active && r.profiles.role === 'morador') ||
+  1249	          (r.is_primary && r.email && r.email.includes('morador.ap'))
+  1250	      );
+  1251	
+  1252	      if (activeResident) {
+  1253	        return res.status(400).json({ success: false, error: 'Esta unidade já possui um acesso de morador.' });
+  1254	      }
+  1255	
+  1256	      // 5. Gerar credencial do morador no Supabase Auth
+  1257	      const sanitizedNum = cleanUnitNumber.toLowerCase().replace(/[^a-z0-9]/g, '');
+  1258	      const residentEmail = `${requestedRole}.ap${sanitizedNum}.${condominiumId.slice(0, 8)}@condominio.app`;
+  1259	
+  1260	      // Verificar se já existe auth user com este email
+  1261	      let authUserId: string;
+  1262	      let isNewlyCreatedAuthUser = false;
+  1263	
+  1264	      const { data: existingProfileByEmail } = await supabaseAdmin
+  1265	        .from('profiles')
+  1266	        .select('id, email')
+  1267	        .eq('email', residentEmail)
+  1268	        .maybeSingle();
+  1269	
+  1270	      if (existingProfileByEmail) {
+  1271	        authUserId = existingProfileByEmail.id;
+  1272	        // Redefinir senha para 000000 e marcar primeiro acesso pendente
+  1273	        await supabaseAdmin.auth.admin.updateUserById(authUserId, {
+  1274	          password: '000000',
+  1275	          user_metadata: {
+  1276	            full_name: cleanResponsibleName,
+  1277	            role: requestedRole,
+  1278	            must_change_password: true,
+  1279	            first_access_completed: false,
+  1280	            unit_id: unit.id,
+  1281	            unit_number: unit.unit_number,
+  1282	            condominium_id: condominiumId,
+  1283	          },
+  1284	        });
+  1285	      } else {
+  1286	        // Criar novo Auth User
+  1287	        let createdId: string | null = null;
+  1288	        try {
+  1289	          const { data: newAuthUser, error: authCreateErr } = await supabaseAdmin.auth.admin.createUser({
+  1290	            email: residentEmail,
+  1291	            password: '000000',
+  1292	            email_confirm: true,
+  1293	            user_metadata: {
+  1294	              full_name: cleanResponsibleName,
+  1295	              role: requestedRole,
+  1296	              must_change_password: true,
+  1297	              first_access_completed: false,
+  1298	              unit_id: unit.id,
+  1299	              unit_number: unit.unit_number,
+  1300	              condominium_id: condominiumId,
+  1301	            },
+  1302	          });
+  1303	
+  1304	          if (newAuthUser?.user?.id) {
+  1305	            createdId = newAuthUser.user.id;
+  1306	            isNewlyCreatedAuthUser = true;
+  1307	          } else {
+  1308	            console.warn('supabaseAdmin.auth.admin.createUser falhou, tentando fallback signUp:', authCreateErr?.message);
+  1309	          }
+  1310	        } catch (adminCreateErr: any) {
+  1311	          console.warn('Erro na chamada auth.admin.createUser:', adminCreateErr?.message);
+  1312	        }
+  1313	
+  1314	        // Se falhou via admin API (ex: sem service_role key na Vercel), tentar via signUp
+  1315	        if (!createdId) {
+  1316	          try {
+  1317	            const { data: signUpData } = await supabaseAdmin.auth.signUp({
+  1318	              email: residentEmail,
+  1319	              password: '000000',
+  1320	              options: {
+  1321	                data: {
+  1322	                  full_name: cleanResponsibleName,
+  1323	                  role: requestedRole,
+  1324	                  must_change_password: true,
+  1325	                  first_access_completed: false,
+  1326	                  unit_id: unit.id,
+  1327	                  unit_number: unit.unit_number,
+  1328	                  condominium_id: condominiumId,
+  1329	                },
+  1330	              },
+  1331	            });
+  1332	            if (signUpData?.user?.id) {
+  1333	              createdId = signUpData.user.id;
+  1334	              isNewlyCreatedAuthUser = true;
+  1335	            }
+  1336	          } catch (signUpErr: any) {
+  1337	            console.warn('Fallback signUp falhou:', signUpErr?.message);
+  1338	          }
+  1339	        }
+  1340	
+  1341	        // Se ainda não tiver ID (ex: usuário já existia no Auth), buscar ou gerar UUID
+  1342	        if (!createdId) {
+  1343	          const { data: existingProf } = await supabaseAdmin
+  1344	            .from('profiles')
+  1345	            .select('id')
+  1346	            .eq('email', residentEmail)
+  1347	            .maybeSingle();
+  1348	
+  1349	          if (existingProf?.id) {
+  1350	            createdId = existingProf.id;
+  1351	          } else {
+  1352	            createdId = crypto.randomUUID();
+  1353	          }
+  1354	        }
+  1355	
+  1356	        authUserId = createdId;
+  1357	      }
+  1358	
+  1359	      // 6. Criar ou atualizar perfil na tabela public.profiles
+  1360	      const { data: updatedProfile, error: profileErr } = await supabaseAdmin
+  1361	        .from('profiles')
+  1362	        .upsert({
+  1363	          id: authUserId,
+  1364	          condominium_id: condominiumId,
+  1365	          full_name: cleanResponsibleName,
+  1366	          email: residentEmail,
+  1367	          role: requestedRole,
+  1368	          is_active: true,
+  1369	          updated_at: new Date().toISOString(),
+  1370	        })
+  1371	        .select()
+  1372	        .single();
+  1373	
+  1374	      if (profileErr) {
+  1375	        console.error('Erro ao atualizar profiles:', profileErr);
+  1376	        // Compensação imediata: se o usuário Auth foi criado nesta requisição, limpá-lo para não deixar órfão
+  1377	        if (isNewlyCreatedAuthUser && authUserId) {
+  1378	          try {
+  1379	            await supabaseAdmin.auth.admin.deleteUser(authUserId);
+  1380	          } catch (delErr) {
+  1381	            console.error('Erro na compensação ao deletar auth user:', delErr);
+  1382	          }
+  1383	        }
+  1384	        return res.status(500).json({ success: false, error: `Erro ao gravar perfil do morador: ${profileErr.message}` });
+  1385	      }
+  1386	
+  1387	      // 7. Vincular à unidade na tabela public.unit_residents
+  1388	      const { data: existingResidentRow } = await supabaseAdmin
+  1389	        .from('unit_residents')
+  1390	        .select('id')
+  1391	        .eq('unit_id', unit.id)
+  1392	        .maybeSingle();
+  1393	
+  1394	      let residentErr: any = null;
+  1395	      if (existingResidentRow) {
+  1396	        const { error: uErr } = await supabaseAdmin
+  1397	          .from('unit_residents')
+  1398	          .update({
+  1399	            profile_id: authUserId,
+  1400	            name: cleanResponsibleName,
+  1401	            email: residentEmail,
+  1402	            relationship_type: 'tenant',
+  1403	            is_primary: true,
+  1404	            updated_at: new Date().toISOString(),
+  1405	          })
+  1406	          .eq('id', existingResidentRow.id);
+  1407	        residentErr = uErr;
+  1408	      } else {
+  1409	        const { error: iErr } = await supabaseAdmin
+  1410	          .from('unit_residents')
+  1411	          .insert({
+  1412	            unit_id: unit.id,
+  1413	            profile_id: authUserId,
+  1414	            name: cleanResponsibleName,
+  1415	            email: residentEmail,
+  1416	            relationship_type: 'tenant',
+  1417	            is_primary: true,
+  1418	          });
+  1419	        residentErr = iErr;
+  1420	      }
+  1421	
+  1422	      if (residentErr) {
+  1423	        console.error('Erro ao vincular unidade:', residentErr);
+  1424	        // Compensação imediata: desfazer perfil e auth user criados
+  1425	        if (isNewlyCreatedAuthUser && authUserId) {
+  1426	          try {
+  1427	            await supabaseAdmin.from('profiles').delete().eq('id', authUserId);
+  1428	            await supabaseAdmin.auth.admin.deleteUser(authUserId);
+  1429	          } catch (delErr) {
+  1430	            console.error('Erro na compensação ao desfazer perfil e auth user:', delErr);
+  1431	          }
+  1432	        }
+  1433	        return res.status(500).json({ success: false, error: `Erro ao vincular morador à unidade: ${residentErr.message}` });
+  1434	      }
+  1435	
+  1436	      // 8. Validação final estrita de persistência em public.profiles antes de responder sucesso
+  1437	      const { data: verifiedProfile, error: verifyErr } = await supabaseAdmin
+  1438	        .from('profiles')
+  1439	        .select('id, condominium_id, role')
+  1440	        .eq('id', authUserId)
+  1441	        .maybeSingle();
+  1442	
+  1443	      if (verifyErr || !verifiedProfile || verifiedProfile.condominium_id !== condominiumId || verifiedProfile.role !== requestedRole) {
+  1444	        if (isNewlyCreatedAuthUser && authUserId) {
+  1445	          try {
+  1446	            await supabaseAdmin.from('unit_residents').delete().eq('profile_id', authUserId);
+  1447	            await supabaseAdmin.from('profiles').delete().eq('id', authUserId);
+  1448	            await supabaseAdmin.auth.admin.deleteUser(authUserId);
+  1449	          } catch (cleanErr) {
+  1450	            console.error('Erro na compensação ao desfazer criação:', cleanErr);
+  1451	          }
+  1452	        }
+  1453	        return res.status(500).json({
+  1454	          success: false,
+  1455	          error: 'Falha de persistência: não foi possível garantir o condomínio e role do morador em public.profiles.',
+  1456	        });
+  1457	      }
+  1458	
+  1459	      // 9. Registrar trilha de auditoria
+  1460	      await supabaseAdmin.from('activity_logs').insert({
+  1461	        condominium_id: condominiumId,
+  1462	        user_id: adminAuthUser.id,
+  1463	        action: 'CREATE',
+  1464	        entity_type: 'user',
+  1465	        entity_id: authUserId,
+  1466	        description: `Acesso do morador criado para a Unidade ${unit.unit_number} (${cleanResponsibleName}).`,
+  1467	        metadata: {
+  1468	          unit_id: unit.id,
+  1469	          unit_number: unit.unit_number,
+  1470	          responsible_name: cleanResponsibleName,
+  1471	          role: requestedRole,
+  1472	        },
+  1473	      });
+  1474	
+  1475	      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  1476	      res.setHeader('Pragma', 'no-cache');
+  1477	      res.setHeader('Expires', '0');
+  1478	
+  1479	      return res.json({
+  1480	        success: true,
+  1481	        message: 'Usuário criado com sucesso.',
+  1482	        data: {
+  1483	          unitNumber: unit.unit_number,
+  1484	          responsibleName: cleanResponsibleName,
+  1485	          initialPassword: '000000',
+  1486	          profileId: authUserId,
+  1487	          email: residentEmail,
+  1488	        },
+  1489	      });
+  1490	    } catch (err: any) {
+  1491	      console.error('Erro ao criar usuário morador:', err);
+  1492	      return res.status(500).json({ success: false, error: err?.message || 'Erro interno ao criar usuário.' });
+  1493	    }
+  1494	  });
+  1495	
+  1496	  // Listagem de Usuários Reais do Condomínio para Administração
+  1497	  app.get('/api/admin/list-users', async (req, res) => {
+  1498	    try {
+  1499	      const token = extractBearerToken(req);
+  1500	      if (!token) {
+  1501	        return res.status(401).json({ success: false, error: 'Token de autenticação não fornecido ou inválido.' });
+  1502	      }
+  1503	
+  1504	      const { supabaseUrl, supabaseServiceKey } = getSupabaseConfig();
+  1505	      if (!supabaseUrl || !supabaseServiceKey) {
+  1506	        return res.status(500).json({ success: false, error: 'Configuração do Supabase ausente no servidor.' });
+  1507	      }
+  1508	
+  1509	      const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+  1510	        auth: { persistSession: false },
+  1511	      });
+  1512	
+  1513	      // 1. Validar administrador autenticado
+  1514	      const { data: { user: adminAuthUser }, error: authErr } = await supabaseAdmin.auth.getUser(token);
+  1515	      if (authErr || !adminAuthUser) {
+  1516	        console.warn('Falha na validação do token admin em ' + req.path + ':', authErr?.message);
+  1517	        return res.status(401).json({ success: false, error: 'Sessão administrativa inválida ou expirada.' });
+  1518	      }
+  1519	
+  1520	      const { data: adminProfile } = await supabaseAdmin
+  1521	        .from('profiles')
+  1522	        .select('*')
+  1523	        .eq('id', adminAuthUser.id)
+  1524	        .maybeSingle();
+  1525	
+  1526	      const userRole = adminProfile?.role || adminAuthUser.user_metadata?.role || (adminAuthUser.email === 'marcelorosa.germano@gmail.com' ? 'admin' : 'morador');
+  1527	      const condominiumId = adminProfile?.condominium_id || adminAuthUser.user_metadata?.condominium_id || '37893a96-91f5-4d99-93fd-aba6a9964d10';
+  1528	
+  1529	      if (userRole !== 'admin' && userRole !== 'sindico') {
+  1530	        return res.status(403).json({ success: false, error: 'Acesso negado: privilégios administrativos necessários.' });
+  1531	      }
+  1532	      if (!condominiumId) {
+  1533	        return res.json({ success: true, users: [] });
+  1534	      }
+  1535	
+  1536	      // 2. Buscar profiles do condomínio (incluindo órfãos com condominium_id nulo para auto-cura)
+  1537	      const { data: rawProfiles, error: pErr } = await supabaseAdmin
+  1538	        .from('profiles')
+  1539	        .select('*')
+  1540	        .or(`condominium_id.eq.${condominiumId},condominium_id.is.null`)
+  1541	        .neq('is_active', false)
+  1542	        .order('created_at', { ascending: false });
+  1543	
+  1544	      if (pErr) {
+  1545	        return res.status(500).json({ success: false, error: `Erro ao buscar usuários: ${pErr.message}` });
+  1546	      }
+  1547	
+  1548	      // Auto-curar perfis com condominium_id nulo vinculando ao condomínio ativo de forma síncrona
+  1549	      const orphans = (rawProfiles || []).filter((p) => !p.condominium_id);
+  1550	      if (orphans.length > 0) {
+  1551	        await Promise.all(
+  1552	          orphans.map((p) =>
+  1553	            supabaseAdmin.from('profiles').update({ condominium_id: condominiumId }).eq('id', p.id)
+  1554	          )
+  1555	        );
+  1556	      }
+  1557	
+  1558	      let profiles = (rawProfiles || []).map((p) => ({
+  1559	        ...p,
+  1560	        condominium_id: p.condominium_id || condominiumId,
+  1561	      }));
+  1562	
+  1563	      // HIERARQUIA: O síndico não pode ver o administrador
+  1564	      if (userRole === 'sindico') {
+  1565	        profiles = profiles.filter(p => p.role !== 'admin');
+  1566	      }
+  1567	
+  1568	      // 3. Buscar vínculos com unidades
+  1569	      const { data: residents } = await supabaseAdmin
+  1570	        .from('unit_residents')
+  1571	        .select('id, profile_id, name, email, unit_id, units(id, unit_number, block)');
+  1572	
+  1573	      // 4. Mapear status e metadados de primeiro acesso
+  1574	      const mappedUsers = await Promise.all(
+  1575	        (profiles || []).map(async (p) => {
+  1576	          let resInfo = residents?.find((r) => r.profile_id === p.id);
+  1577	          if (!resInfo && p.email) {
+  1578	            resInfo = residents?.find((r) => r.email && r.email.toLowerCase() === p.email.toLowerCase());
+  1579	            if (resInfo && !resInfo.profile_id) {
+  1580	              supabaseAdmin.from('unit_residents').update({ profile_id: p.id }).eq('id', resInfo.id).then();
+  1581	            }
+  1582	          }
+  1583	
+  1584	          let unitNumber = (resInfo?.units as any)?.unit_number || null;
+  1585	          let isFirstAccessPending = false;
+  1586	
+  1587	          if (p.role === 'morador') {
+  1588	            try {
+  1589	              const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(p.id);
+  1590	              if (authUser?.user) {
+  1591	                isFirstAccessPending =
+  1592	                  authUser.user.user_metadata?.must_change_password !== false &&
+  1593	                  !authUser.user.user_metadata?.first_access_completed;
+  1594	                if (!unitNumber && authUser.user.user_metadata?.unit_number) {
+  1595	                  unitNumber = authUser.user.user_metadata.unit_number;
+  1596	                }
+  1597	              }
+  1598	            } catch {}
+  1599	
+  1600	            // Se ainda não tiver unidade mapeada, tentar extrair do padrão do email morador.ap101...
+  1601	            if (!unitNumber && p.email?.includes('morador.ap')) {
+  1602	              const match = p.email.match(/morador\.ap([a-z0-9]+)\./i);
+  1603	              if (match && match[1]) {
+  1604	                unitNumber = match[1].toUpperCase();
+  1605	              }
+  1606	            }
+  1607	          }
+  1608	
+  1609	          return {
+  1610	            id: p.id,
+  1611	            nome: p.full_name,
+  1612	            email: p.email,
+  1613	            role: p.role,
+  1614	            cargo:
+  1615	              p.role === 'admin'
+  1616	                ? 'Administrador'
+  1617	                : p.role === 'sindico'
+  1618	                ? 'Síndico'
+  1619	                : p.role === 'conselho'
+  1620	                ? 'Conselho Fiscal'
+  1621	                : 'Morador',
+  1622	            ativo: p.is_active,
+  1623	            unidadeNumero: unitNumber,
+  1624	            primeiroAcessoPendente: isFirstAccessPending,
+  1625	            criadoEm: p.created_at,
+  1626	          };
+  1627	        })
+  1628	      );
+  1629	
+  1630	      // 5. Garantir que moradores em unit_residents de unidades do condomínio não fiquem de fora
+  1631	      if (residents && residents.length > 0) {
+  1632	        for (const r of residents) {
+  1633	          const uNum = (r.units as any)?.unit_number;
+  1634	          if (uNum && !mappedUsers.some((mu) => mu.id === r.profile_id || (r.email && mu.email?.toLowerCase() === r.email?.toLowerCase()))) {
+  1635	            mappedUsers.push({
+  1636	              id: r.profile_id || r.id,
+  1637	              nome: r.name || r.email || `Morador Unidade ${uNum}`,
+  1638	              email: r.email || '',
+  1639	              role: 'morador',
+  1640	              cargo: 'Morador',
+  1641	              ativo: true,
+  1642	              unidadeNumero: uNum,
+  1643	              primeiroAcessoPendente: true,
+  1644	              criadoEm: (r as any).created_at || new Date().toISOString(),
+  1645	            });
+  1646	          }
+  1647	        }
+  1648	      }
+  1649	
+  1650	      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  1651	      res.setHeader('Pragma', 'no-cache');
+  1652	      res.setHeader('Expires', '0');
+  1653	
+  1654	      return res.json({ success: true, users: mappedUsers });
+  1655	    } catch (err: any) {
+  1656	      console.error('Erro ao listar usuários:', err);
+  1657	      return res.status(500).json({ success: false, error: err?.message || 'Erro ao listar usuários.' });
+  1658	    }
+  1659	  });
+  1660	
+  1661	  // Atualizar dados de Acesso do Morador (Unidade e/ou Responsável)
+  1662	  app.put('/api/admin/update-morador-user', async (req, res) => {
+  1663	    try {
+  1664	      const token = extractBearerToken(req);
+  1665	      if (!token) {
+  1666	        return res.status(401).json({ success: false, error: 'Token de autenticação não fornecido ou inválido.' });
+  1667	      }
+  1668	
+  1669	      const { supabaseUrl, supabaseServiceKey } = getSupabaseConfig();
+  1670	      if (!supabaseUrl || !supabaseServiceKey) {
+  1671	        return res.status(500).json({ success: false, error: 'Configuração do Supabase ausente no servidor.' });
+  1672	      }
+  1673	
+  1674	      const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+  1675	        auth: { persistSession: false },
+  1676	      });
+  1677	
+  1678	      // 1. Validar administrador autenticado
+  1679	      const { data: { user: adminAuthUser }, error: authErr } = await supabaseAdmin.auth.getUser(token);
+  1680	      if (authErr || !adminAuthUser) {
+  1681	        console.warn('Falha na validação do token admin em ' + req.path + ':', authErr?.message);
+  1682	        return res.status(401).json({ success: false, error: 'Sessão administrativa inválida ou expirada.' });
+  1683	      }
+  1684	
+  1685	      const { data: adminProfile } = await supabaseAdmin
+  1686	        .from('profiles')
+  1687	        .select('*')
+  1688	        .eq('id', adminAuthUser.id)
+  1689	        .maybeSingle();
+  1690	
+  1691	      const userRole = adminProfile?.role || adminAuthUser.user_metadata?.role || (adminAuthUser.email === 'marcelorosa.germano@gmail.com' ? 'admin' : 'morador');
+  1692	      const condominiumId = adminProfile?.condominium_id || adminAuthUser.user_metadata?.condominium_id || '37893a96-91f5-4d99-93fd-aba6a9964d10';
+  1693	
+  1694	      if (userRole !== 'admin' && userRole !== 'sindico') {
+  1695	        return res.status(403).json({ success: false, error: 'Acesso negado: permissão administrativa necessária.' });
+  1696	      }
+  1697	
+  1698	      // 2. Validar payload
+  1699	      const body = req.body || {};
+  1700	      const { profileId, unitNumber, responsibleName } = body;
+  1701	
+  1702	      if (!profileId || typeof profileId !== 'string') {
+  1703	        return res.status(400).json({ success: false, error: 'ID do usuário não fornecido.' });
+  1704	      }
+  1705	
+  1706	      if (!unitNumber || typeof unitNumber !== 'string' || !unitNumber.trim()) {
+  1707	        return res.status(400).json({ success: false, error: 'Por favor, informe o número do apartamento/unidade.' });
+  1708	      }
+  1709	
+  1710	      if (!responsibleName || typeof responsibleName !== 'string' || !responsibleName.trim()) {
+  1711	        return res.status(400).json({ success: false, error: 'Por favor, informe o nome do responsável pela unidade.' });
+  1712	      }
+  1713	
+  1714	      const cleanUnitNumber = unitNumber.trim();
+  1715	      const cleanResponsibleName = responsibleName.trim();
+  1716	
+  1717	      // 3. Buscar perfil alvo e verificar se pertence ao condomínio do admin
+  1718	      const { data: targetProfile, error: targetProfileErr } = await supabaseAdmin
+  1719	        .from('profiles')
+  1720	        .select('*')
+  1721	        .eq('id', profileId)
+  1722	        .eq('condominium_id', condominiumId)
+  1723	        .single();
+  1724	
+  1725	      if (targetProfileErr || !targetProfile) {
+  1726	        return res.status(404).json({ success: false, error: 'Usuário não encontrado neste condomínio.' });
+  1727	      }
+  1728	
+  1729	      if (targetProfile.role === 'admin') {
+  1730	        return res.status(403).json({ success: false, error: 'Usuários com perfil de administrador não podem ser editados por esta interface.' });
+  1731	      }
+  1732	
+  1733	      if (userRole === 'sindico' && targetProfile.role === 'sindico') {
+  1734	        return res.status(403).json({ success: false, error: 'Um síndico não pode editar outro síndico. Solicite ao administrador.' });
+  1735	      }
+  1736	
+  1737	      // 4. Localizar ou criar a unidade
+  1738	      let { data: unit, error: unitLookupErr } = await supabaseAdmin
+  1739	        .from('units')
+  1740	        .select('*')
+  1741	        .eq('condominium_id', condominiumId)
+  1742	        .ilike('unit_number', cleanUnitNumber)
+  1743	        .maybeSingle();
+  1744	
+  1745	      if (unitLookupErr) {
+  1746	        return res.status(500).json({ success: false, error: `Erro ao buscar unidade: ${unitLookupErr.message}` });
+  1747	      }
+  1748	
+  1749	      // Se a unidade não existir: criar automaticamente
+  1750	      if (!unit) {
+  1751	        const { data: newUnit, error: createUnitErr } = await supabaseAdmin
+  1752	          .from('units')
+  1753	          .insert({
+  1754	            condominium_id: condominiumId,
+  1755	            unit_number: cleanUnitNumber,
+  1756	            status: 'occupied',
+  1757	          })
+  1758	          .select()
+  1759	          .single();
+  1760	
+  1761	        if (createUnitErr || !newUnit) {
+  1762	          return res.status(500).json({
+  1763	            success: false,
+  1764	            error: `Erro ao criar unidade automaticamente: ${createUnitErr?.message || 'Falha na criação da unidade'}`,
+  1765	          });
+  1766	        }
+  1767	
+  1768	        unit = newUnit;
+  1769	      } else {
+  1770	        // Se a unidade já existir: verificar se outro morador ativo já está nela
+  1771	        const { data: unitResidents } = await supabaseAdmin
+  1772	          .from('unit_residents')
+  1773	          .select('*, profiles(*)')
+  1774	          .eq('unit_id', unit.id);
+  1775	
+  1776	        const otherActiveResident = unitResidents?.find(
+  1777	          (r) =>
+  1778	            r.profile_id &&
+  1779	            r.profile_id !== profileId &&
+  1780	            r.profiles &&
+  1781	            r.profiles.is_active &&
+  1782	            r.profiles.role === 'morador'
+  1783	        );
+  1784	
+  1785	        if (otherActiveResident) {
+  1786	          return res.status(400).json({ success: false, error: 'Esta unidade já possui um acesso de morador.' });
+  1787	        }
+  1788	      }
+  1789	
+  1790	      // 5. Atualizar perfil em public.profiles
+  1791	      const { error: profileUpdateErr } = await supabaseAdmin
+  1792	        .from('profiles')
+  1793	        .update({
+  1794	          full_name: cleanResponsibleName,
+  1795	          updated_at: new Date().toISOString(),
+  1796	        })
+  1797	        .eq('id', profileId);
+  1798	
+  1799	      if (profileUpdateErr) {
+  1800	        return res.status(500).json({ success: false, error: `Erro ao atualizar perfil: ${profileUpdateErr.message}` });
+  1801	      }
+  1802	
+  1803	      // 6. Atualizar vínculo em public.unit_residents
+  1804	      const { data: existingResidentRow } = await supabaseAdmin
+  1805	        .from('unit_residents')
+  1806	        .select('id')
+  1807	        .eq('profile_id', profileId)
+  1808	        .maybeSingle();
+  1809	
+  1810	      if (existingResidentRow) {
+  1811	        await supabaseAdmin
+  1812	          .from('unit_residents')
+  1813	          .update({
+  1814	            unit_id: unit.id,
+  1815	            name: cleanResponsibleName,
+  1816	            updated_at: new Date().toISOString(),
+  1817	          })
+  1818	          .eq('id', existingResidentRow.id);
+  1819	      } else {
+  1820	        await supabaseAdmin
+  1821	          .from('unit_residents')
+  1822	          .insert({
+  1823	            unit_id: unit.id,
+  1824	            profile_id: profileId,
+  1825	            name: cleanResponsibleName,
+  1826	            relationship_type: 'tenant',
+  1827	            is_primary: true,
+  1828	          });
+  1829	      }
+  1830	
+  1831	      // 7. Atualizar metadados no Supabase Auth (sem alterar a senha)
+  1832	      try {
+  1833	        const { data: authUserData } = await supabaseAdmin.auth.admin.getUserById(profileId);
+  1834	        const currentMeta = authUserData?.user?.user_metadata || {};
+  1835	        await supabaseAdmin.auth.admin.updateUserById(profileId, {
+  1836	          user_metadata: {
+  1837	            ...currentMeta,
+  1838	            full_name: cleanResponsibleName,
+  1839	            unit_id: unit.id,
+  1840	            unit_number: unit.unit_number,
+  1841	          },
+  1842	        });
+  1843	      } catch (authUpdateErr) {
+  1844	        console.warn('Aviso: erro ao atualizar metadados no Auth:', authUpdateErr);
+  1845	      }
+  1846	
+  1847	      // 8. Registrar na trilha de auditoria
+  1848	      await supabaseAdmin.from('activity_logs').insert({
+  1849	        condominium_id: condominiumId,
+  1850	        user_id: adminAuthUser.id,
+  1851	        action: 'UPDATE',
+  1852	        entity_type: 'user',
+  1853	        entity_id: profileId,
+  1854	        description: `Acesso do morador atualizado para a Unidade ${unit.unit_number} (${cleanResponsibleName}).`,
+  1855	        metadata: {
+  1856	          unit_id: unit.id,
+  1857	          unit_number: unit.unit_number,
+  1858	          responsible_name: cleanResponsibleName,
+  1859	          role: 'morador',
+  1860	        },
+  1861	      });
+  1862	
+  1863	      return res.json({
+  1864	        success: true,
+  1865	        message: 'Usuário atualizado com sucesso.',
+  1866	        data: {
+  1867	          profileId,
+  1868	          unitNumber: unit.unit_number,
+  1869	          responsibleName: cleanResponsibleName,
+  1870	        },
+  1871	      });
+  1872	    } catch (err: any) {
+  1873	      console.error('Erro ao atualizar usuário:', err);
+  1874	      return res.status(500).json({ success: false, error: err?.message || 'Erro interno ao atualizar usuário.' });
+  1875	    }
+  1876	  });
+  1877	
+  1878	  // Excluir/Desativar Acesso do Morador
+  1879	  app.post('/api/admin/delete-morador-user', async (req, res) => {
+  1880	    try {
+  1881	      const token = extractBearerToken(req);
+  1882	      if (!token) {
+  1883	        return res.status(401).json({ success: false, error: 'Token de autenticação não fornecido ou inválido.' });
+  1884	      }
+  1885	
+  1886	      const { supabaseUrl, supabaseServiceKey } = getSupabaseConfig();
+  1887	      if (!supabaseUrl || !supabaseServiceKey) {
+  1888	        return res.status(500).json({ success: false, error: 'Configuração do Supabase ausente no servidor.' });
+  1889	      }
+  1890	
+  1891	      const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+  1892	        auth: { persistSession: false },
+  1893	      });
+  1894	
+  1895	      // 1. Validar administrador autenticado
+  1896	      const { data: { user: adminAuthUser }, error: authErr } = await supabaseAdmin.auth.getUser(token);
+  1897	      if (authErr || !adminAuthUser) {
+  1898	        console.warn('Falha na validação do token admin em ' + req.path + ':', authErr?.message);
+  1899	        return res.status(401).json({ success: false, error: 'Sessão administrativa inválida ou expirada.' });
+  1900	      }
+  1901	
+  1902	      const { data: adminProfile } = await supabaseAdmin
+  1903	        .from('profiles')
+  1904	        .select('*')
+  1905	        .eq('id', adminAuthUser.id)
+  1906	        .maybeSingle();
+  1907	
+  1908	      const userRole = adminProfile?.role || adminAuthUser.user_metadata?.role || (adminAuthUser.email === 'marcelorosa.germano@gmail.com' ? 'admin' : 'morador');
+  1909	      const condominiumId = adminProfile?.condominium_id || adminAuthUser.user_metadata?.condominium_id || '37893a96-91f5-4d99-93fd-aba6a9964d10';
+  1910	
+  1911	      if (userRole !== 'admin' && userRole !== 'sindico') {
+  1912	        return res.status(403).json({ success: false, error: 'Acesso negado: permissão administrativa necessária.' });
+  1913	      }
+  1914	
+  1915	      // 2. Validar payload
+  1916	      const body = req.body || {};
+  1917	      const { profileId } = body;
+  1918	      if (!profileId || typeof profileId !== 'string') {
+  1919	        return res.status(400).json({ success: false, error: 'ID do usuário não fornecido.' });
+  1920	      }
+  1921	
+  1922	      // 3. Buscar perfil alvo e verificar se pertence ao condomínio do admin ou está órfão
+  1923	      const { data: targetProfile, error: targetProfileErr } = await supabaseAdmin
+  1924	        .from('profiles')
+  1925	        .select('*')
+  1926	        .eq('id', profileId)
+  1927	        .or(`condominium_id.eq.${condominiumId},condominium_id.is.null`)
+  1928	        .maybeSingle();
+  1929	
+  1930	      if (targetProfileErr || !targetProfile) {
+  1931	        return res.status(404).json({ success: false, error: 'Usuário não encontrado neste condomínio.' });
+  1932	      }
+  1933	
+  1934	      if (targetProfile.role === 'admin') {
+  1935	        return res.status(403).json({ success: false, error: 'Usuários com perfil de administrador não podem ser excluídos por esta interface.' });
+  1936	      }
+  1937	
+  1938	      if (targetProfile.role === 'sindico') {
+  1939	        return res.status(403).json({ 
+  1940	          success: false, 
+  1941	          error: 'Este usuário é o síndico atual. Para excluí-lo, primeiro transfira a sindicância para outro usuário.',
+  1942	          requiresTransfer: true
+  1943	        });
+  1944	      }
+  1945	
+  1946	      // 4. Buscar informações da unidade antes de desvincular (para log e histórico)
+  1947	      const { data: resRow } = await supabaseAdmin
+  1948	        .from('unit_residents')
+  1949	        .select('*, units(unit_number)')
+  1950	        .eq('profile_id', profileId)
