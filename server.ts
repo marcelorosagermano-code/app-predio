@@ -15,12 +15,9 @@ function getSupabaseConfig() {
     process.env.SUPABASE_SECRET_KEY ||
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     process.env.SUPABASE_SERVICE_KEY ||
-    process.env.VITE_SUPABASE_ANON_KEY ||
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.SUPABASE_PUBLISHABLE_KEY ||
     '';
 
-  console.log(`[ENV] Supabase URL present: ${!!supabaseUrl}, Supabase Key present: ${!!supabaseServiceKey}`);
+  console.log(`[ENV] Supabase URL present: ${!!supabaseUrl}, Supabase Secret Key present: ${!!supabaseServiceKey}`);
 
   return { supabaseUrl, supabaseServiceKey };
 }
@@ -1003,6 +1000,7 @@ export function registerApiRoutes(app: express.Express) {
       const { supabaseUrl, supabaseServiceKey } = getSupabaseConfig();
       if (!supabaseUrl || !supabaseServiceKey) return res.status(500).json({ success: false, error: 'Configuração do Supabase ausente.' });
 
+      if (!supabaseUrl || !supabaseServiceKey) return res.status(500).json({ success: false, error: 'Configuração do Supabase ausente (Service Key não encontrada no ambiente).' });
       const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, { auth: { persistSession: false } });
 
       // 1. Identificar quem está chamando
@@ -1044,9 +1042,9 @@ export function registerApiRoutes(app: express.Express) {
 
       // 4. Chamar a RPC Atômica
       const { error: rpcError } = await supabaseAdmin.rpc('transfer_sindicancia', {
-        p_current_sindico_id: currentSindicoId || null,
-        p_target_profile_id: targetProfileId,
-        p_condominium_id: condoId
+        caller_id: authUser.id,
+        current_sindico_id: currentSindicoId || null,
+        target_profile_id: targetProfileId
       });
 
       if (rpcError) {
@@ -1076,6 +1074,7 @@ export function registerApiRoutes(app: express.Express) {
       if (!token) return res.status(401).json({ success: false, error: 'Token não fornecido.' });
 
       const { supabaseUrl, supabaseServiceKey } = getSupabaseConfig();
+      if (!supabaseUrl || !supabaseServiceKey) return res.status(500).json({ success: false, error: 'Configuração do Supabase ausente (Service Key não encontrada no ambiente).' });
       const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, { auth: { persistSession: false } });
 
       const { data: { user: authUser }, error: authError } = await supabaseAdmin.auth.getUser(token);
@@ -1156,6 +1155,7 @@ export function registerApiRoutes(app: express.Express) {
       }
 
       const { supabaseUrl, supabaseServiceKey } = getSupabaseConfig();
+      if (!supabaseUrl || !supabaseServiceKey) return res.status(500).json({ success: false, error: 'Configuração do Supabase ausente (Service Key não encontrada no ambiente).' });
       const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, { auth: { persistSession: false } });
 
       const { data: { user: authUser }, error: authError } = await supabaseAdmin.auth.getUser(token);
@@ -1242,6 +1242,7 @@ export function registerApiRoutes(app: express.Express) {
       const { responsibleName, unitNumber, role, isActive } = req.body;
 
       const { supabaseUrl, supabaseServiceKey } = getSupabaseConfig();
+      if (!supabaseUrl || !supabaseServiceKey) return res.status(500).json({ success: false, error: 'Configuração do Supabase ausente (Service Key não encontrada no ambiente).' });
       const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, { auth: { persistSession: false } });
 
       const { data: { user: authUser }, error: authError } = await supabaseAdmin.auth.getUser(token);
@@ -1314,6 +1315,7 @@ export function registerApiRoutes(app: express.Express) {
       const targetId = req.params.id;
 
       const { supabaseUrl, supabaseServiceKey } = getSupabaseConfig();
+      if (!supabaseUrl || !supabaseServiceKey) return res.status(500).json({ success: false, error: 'Configuração do Supabase ausente (Service Key não encontrada no ambiente).' });
       const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, { auth: { persistSession: false } });
 
       const { data: { user: authUser }, error: authError } = await supabaseAdmin.auth.getUser(token);
